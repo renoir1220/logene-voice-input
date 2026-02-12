@@ -1,0 +1,32 @@
+[package]
+name = "logene-voice-input"
+version = "0.1.0"
+description = "Logene 语音输入法 — 语音转文字 + 语音指令"
+authors = ["liudongyang"]
+edition = "2021"
+
+[lib]
+name = "logene_voice_input_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+cpal = "0.15"
+hound = "3.5"
+reqwest = { version = "0.12", features = ["multipart", "json"] }
+tokio = { version = "1", features = ["full"] }
+enigo = "0.2"
+arboard = "3"
+dirs = "6"
+log = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_UI_Input_KeyboardAndMouse"] }

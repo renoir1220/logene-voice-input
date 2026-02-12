@@ -1,0 +1,110 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#app {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: rgba(30, 30, 30, 0.9);
+  border-radius: 40px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  /* 允许拖动窗口 */
+  -webkit-app-region: drag;
+  cursor: grab;
+}
+
+/* 录音按钮 */
+.record-btn {
+  -webkit-app-region: no-drag;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ccc;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  outline: none;
+  flex-shrink: 0;
+}
+
+.record-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* 录音中 */
+.record-btn.recording {
+  background: rgba(239, 68, 68, 0.8);
+  border-color: rgba(239, 68, 68, 1);
+  color: white;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* 识别中 */
+.record-btn.recognizing {
+  background: rgba(59, 130, 246, 0.8);
+  border-color: rgba(59, 130, 246, 1);
+  color: white;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 状态文字 */
+.status-text {
+  color: #aaa;
+  font-size: 13px;
+  font-family: -apple-system, "Microsoft YaHei", sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+  transition: color 0.2s;
+}
+
+.status-text.result {
+  color: #4ade80;
+}
+
+/* VAD 指示器 */
+.vad-indicator {
+  display: none;
+  color: #4ade80;
+  flex-shrink: 0;
+  animation: vad-blink 2s ease-in-out infinite;
+}
+
+.vad-indicator.active {
+  display: flex;
+  align-items: center;
+}
+
+@keyframes vad-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
