@@ -11,16 +11,22 @@ declare global {
       restoreFocus: (appId: string | null) => Promise<void>
       getVadEnabled: () => Promise<boolean>
       setVadEnabled: (enabled: boolean) => Promise<boolean>
-      debugLog: (msg: string) => Promise<void>
       recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) => Promise<string>
       openDashboard: () => Promise<void>
       getWindowPosition: () => Promise<[number, number]>
       setWindowPosition: (x: number, y: number) => Promise<void>
       getModelStatuses: () => Promise<ModelStatus[]>
+      getModelCatalog: () => Promise<Array<{
+        id: string
+        name: string
+        description: string
+        size: string
+      }>>
       downloadModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
       deleteModel: (modelId: string) => Promise<void>
       getLogs: () => Promise<LogEntry[]>
       clearLogs: () => Promise<void>
+      copyToClipboard: (text: string) => Promise<boolean>
       onHotkeyState: (cb: (state: string) => void) => void
       onHotkeyResult: (cb: (result: string) => void) => void
       onToggleVad: (cb: (enabled: boolean) => void) => void
@@ -50,6 +56,24 @@ interface ModelStatus {
   description: string
   size: string
   downloaded: boolean
+  incomplete?: boolean
+  dependencies?: Array<{
+    role: string
+    modelName: string
+    backend: string
+    quantize: boolean
+    cached: boolean
+    complete: boolean
+    missingFiles?: string[]
+    issue?: string
+  }>
+}
+
+interface ModelCatalogItem {
+  id: string
+  name: string
+  description: string
+  size: string
 }
 
 interface LogEntry {
@@ -95,19 +119,10 @@ let isCapturing = false
 let startCapturePromise: Promise<void> | null = null
 // 单一焦点快照：录音开始时记录原前台应用，用于识别后恢复光标焦点
 let focusSnapshotAppId: string | null = null
-let uiTraceSeq = 0
 
 function uiTrace(event: string, extra: Record<string, unknown> = {}) {
-  uiTraceSeq += 1
-  const payload = {
-    seq: uiTraceSeq,
-    state,
-    focusSnapshotAppId,
-    vadEnabled: vadState.enabled,
-    ...extra,
-  }
-  const details = JSON.stringify(payload)
-  window.electronAPI.debugLog(`[UI] ${event} ${details}`).catch(() => { /* ignore */ })
+  void event
+  void extra
 }
 
 async function captureFocusSnapshot(reason: string): Promise<string | null> {
@@ -834,13 +849,115 @@ function updateAsrModeUI(mode: string) {
 
 let currentSelectedModel = 'paraformer-zh-contextual-quant'
 
+function getBrokenDeps(model: ModelStatus): Array<{ role: string; issue: string }> {
+  return (model.dependencies || [])
+    .filter(dep => !dep.complete)
+    .map(dep => ({ role: dep.role, issue: dep.issue || '模型文件不完整' }))
+}
+
+function updateModelIntegrityIndicators(models: ModelStatus[]) {
+  const brokenModels = models.filter(m => Boolean(m.incomplete))
+  const warningIcon = document.getElementById('settings-model-warning') as HTMLSpanElement | null
+  if (warningIcon) {
+    warningIcon.hidden = brokenModels.length === 0
+    warningIcon.title = brokenModels.length
+      ? `检测到 ${brokenModels.length} 个本地模型不完整，请进入首选项重新下载`
+      : ''
+  }
+
+  const tip = document.getElementById('model-integrity-tip') as HTMLDivElement | null
+  if (!tip) return
+  if (brokenModels.length === 0) {
+    tip.style.display = 'none'
+    tip.textContent = ''
+    return
+  }
+  const names = brokenModels.map(m => m.name).join('、')
+  tip.style.display = ''
+  tip.textContent = `检测到模型文件不完整：${names}。请点击“重新下载”修复。`
+}
+
+function setModelListHint(message = '', withRetry = false) {
+  const hint = document.getElementById('model-list-hint') as HTMLDivElement | null
+  if (!hint) return
+  if (!message) {
+    hint.style.display = 'none'
+    hint.textContent = ''
+    return
+  }
+  hint.style.display = ''
+  hint.innerHTML = ''
+  const text = document.createElement('span')
+  text.textContent = message
+  hint.appendChild(text)
+  if (withRetry) {
+    const retry = document.createElement('button')
+    retry.className = 'btn-sm btn-sm-select'
+    retry.textContent = '重试'
+    retry.addEventListener('click', () => { void renderModelList() })
+    hint.appendChild(retry)
+  }
+}
+
+function mapCatalogToStatuses(catalog: ModelCatalogItem[]): ModelStatus[] {
+  return catalog.map((item) => ({
+    id: item.id,
+    name: item.name,
+    description: item.description,
+    size: item.size,
+    downloaded: false,
+    incomplete: false,
+    dependencies: [],
+  }))
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timeout (${timeoutMs}ms)`)), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+async function fetchModelStatusesWithFallback(): Promise<{ models: ModelStatus[]; fallbackUsed: boolean }> {
+  const statuses = await withTimeout(window.electronAPI.getModelStatuses(), 4000, 'get-model-statuses')
+  if (Array.isArray(statuses) && statuses.length > 0) {
+    return { models: statuses, fallbackUsed: false }
+  }
+  const catalog = await withTimeout(window.electronAPI.getModelCatalog(), 2000, 'get-model-catalog')
+  if (Array.isArray(catalog) && catalog.length > 0) {
+    return { models: mapCatalogToStatuses(catalog), fallbackUsed: true }
+  }
+  return { models: [], fallbackUsed: true }
+}
+
 async function renderModelList(selectedModel?: string) {
   const container = document.getElementById('model-list')
   if (!container) return
   if (selectedModel) currentSelectedModel = selectedModel
   container.innerHTML = ''
+  setModelListHint('正在加载模型列表...')
   try {
-    const models = await window.electronAPI.getModelStatuses()
+    const { models, fallbackUsed } = await fetchModelStatusesWithFallback()
+    if (models.length === 0) {
+      updateModelIntegrityIndicators([])
+      setModelListHint('模型列表加载失败，请重试。', true)
+      return
+    }
+    if (fallbackUsed) {
+      setModelListHint('模型状态读取失败，已显示基础模型列表。你仍可点击“准备模型”继续。', true)
+    } else {
+      setModelListHint('')
+    }
+    updateModelIntegrityIndicators(models)
     for (const m of models) {
       const item = document.createElement('div')
       item.className = 'model-item' + (m.id === currentSelectedModel ? ' active' : '')
@@ -848,11 +965,43 @@ async function renderModelList(selectedModel?: string) {
       const info = document.createElement('div')
       info.className = 'model-info'
       info.innerHTML = `<div class="model-name">${m.name}</div><div class="model-desc">${m.description}</div><div class="model-size">${m.size}</div>`
+      if (m.incomplete) {
+        const broken = getBrokenDeps(m)
+        if (broken.length > 0) {
+          const note = document.createElement('div')
+          note.className = 'model-integrity-note'
+          note.textContent = `不完整项：${broken.map((d) => `${d.role}(${d.issue})`).join('；')}`
+          info.appendChild(note)
+        }
+      }
 
       const actions = document.createElement('div')
       actions.className = 'model-actions'
 
-      if (m.downloaded) {
+      if (m.incomplete) {
+        const status = document.createElement('span')
+        status.className = 'model-status model-status-warn'
+        status.textContent = '下载不完整'
+        actions.appendChild(status)
+
+        const retryBtn = document.createElement('button')
+        retryBtn.className = 'btn-sm btn-sm-primary'
+        retryBtn.textContent = '重新下载'
+        retryBtn.id = `dl-btn-${m.id}`
+        retryBtn.addEventListener('click', () => downloadModelUI(m.id))
+        actions.appendChild(retryBtn)
+
+        const progress = document.createElement('span')
+        progress.className = 'model-progress'
+        progress.id = `dl-progress-${m.id}`
+        actions.appendChild(progress)
+
+        const delBtn = document.createElement('button')
+        delBtn.className = 'btn-sm btn-sm-danger'
+        delBtn.textContent = '删除'
+        delBtn.addEventListener('click', () => deleteModelUI(m.id))
+        actions.appendChild(delBtn)
+      } else if (m.downloaded) {
         const status = document.createElement('span')
         status.className = 'model-status'
         status.textContent = '已下载'
@@ -895,7 +1044,10 @@ async function renderModelList(selectedModel?: string) {
       item.appendChild(actions)
       container.appendChild(item)
     }
-  } catch (_) { }
+  } catch (e) {
+    updateModelIntegrityIndicators([])
+    setModelListHint(`模型列表加载失败：${String(e)}`, true)
+  }
 }
 
 async function selectModel(modelId: string) {
@@ -910,7 +1062,7 @@ async function downloadModelUI(modelId: string) {
   const btn = document.getElementById(`dl-btn-${modelId}`) as HTMLButtonElement
   const progress = document.getElementById(`dl-progress-${modelId}`)
   if (btn) { btn.disabled = true; btn.textContent = '准备中...' }
-  if (progress) progress.textContent = '首次使用需下载模型，请耐心等待...'
+  if (progress) progress.textContent = '正在检查并准备模型文件，请耐心等待...'
   const result = await window.electronAPI.downloadModel(modelId)
   if (result.success) {
     await renderModelList()
@@ -954,6 +1106,24 @@ async function loadLogs() {
     const logs = await window.electronAPI.getLogs()
     for (const entry of logs) appendLogEntry(entry)
   } catch (_) { }
+}
+
+function logsToPlainText(logs: LogEntry[]): string {
+  return logs
+    .map((entry) => `${entry.time} [${entry.level.toUpperCase()}] ${entry.msg}`)
+    .join('\n')
+}
+
+async function copyLogsToClipboard() {
+  const logs = await window.electronAPI.getLogs()
+  const text = logsToPlainText(logs)
+  if (!text.trim()) {
+    throw new Error('当前没有可复制的日志')
+  }
+  const ok = await window.electronAPI.copyToClipboard(text)
+  if (!ok) {
+    throw new Error('系统剪贴板不可用')
+  }
 }
 
 // ── 初始化 ──
@@ -1033,6 +1203,8 @@ function initFloatCapsuleUI() {
   })
 
   // 悬浮球事件（单击录音，双击/右键呼出面板）
+  // 用延时区分单击和双击，避免双击时误触发录音
+  let clickTimer: ReturnType<typeof setTimeout> | null = null
   recordBtn.addEventListener('click', (e) => {
     if (dragMoved) {
       uiTrace('record-btn.click.ignored', { reason: 'drag-moved' })
@@ -1040,11 +1212,16 @@ function initFloatCapsuleUI() {
       e.stopPropagation()
       return
     }
-    uiTrace('record-btn.click')
-    onRecordClick()
+    if (clickTimer) return // 等待双击判定中，忽略第二次 click
+    clickTimer = setTimeout(() => {
+      clickTimer = null
+      uiTrace('record-btn.click')
+      onRecordClick()
+    }, 250)
   })
   recordBtn.addEventListener('dblclick', (e) => {
     if (dragMoved) return
+    if (clickTimer) { clearTimeout(clickTimer); clickTimer = null }
     window.electronAPI.openDashboard()
   })
   recordBtn.addEventListener('contextmenu', (e) => {
@@ -1169,6 +1346,20 @@ function initDashboardUI() {
     await window.electronAPI.clearLogs()
     document.getElementById('log-container')!.innerHTML = ''
   })
+  document.getElementById('log-copy-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('log-copy-btn') as HTMLButtonElement | null
+    if (!btn) return
+    const oldText = btn.textContent || '复制'
+    try {
+      await copyLogsToClipboard()
+      btn.textContent = '已复制'
+    } catch (e) {
+      btn.textContent = '复制失败'
+      showError(`复制日志失败: ${String(e)}`)
+    } finally {
+      setTimeout(() => { btn.textContent = oldText }, 1500)
+    }
+  })
 
   dashboardVadToggle?.addEventListener('change', () => {
     setVadEnabled(Boolean(dashboardVadToggle?.checked))
@@ -1259,10 +1450,13 @@ function initRewriteUI() {
 
   copyBtn.addEventListener('click', () => {
     if (!resultEl.value) return
-    navigator.clipboard.writeText(resultEl.value)
-    const oldText = copyBtn.textContent
-    copyBtn.textContent = '已复制!'
-    setTimeout(() => { copyBtn.textContent = oldText }, 2000)
+    window.electronAPI.copyToClipboard(resultEl.value).then(() => {
+      const oldText = copyBtn.textContent
+      copyBtn.textContent = '已复制!'
+      setTimeout(() => { copyBtn.textContent = oldText }, 2000)
+    }).catch((e) => {
+      showError(`复制失败: ${String(e)}`)
+    })
   })
 
   cancelBtn.addEventListener('click', () => window.electronAPI.closeRewrite())

@@ -10,6 +10,7 @@ import {
   screen,
   shell,
   systemPreferences,
+  clipboard,
 } from 'electron'
 import * as path from 'path'
 import { exec } from 'child_process'
@@ -17,8 +18,8 @@ import { promisify } from 'util'
 import { uIOhook, UiohookKey } from 'uiohook-napi'
 import { getConfig, saveConfig, AppConfig } from './config'
 import { recognize } from './asr'
-import { recognizeLocal, initLocalRecognizer, disposeLocalRecognizer, checkModelDownloaded } from './local-asr'
-import { getModelInfoList } from './model-manager'
+import { recognizeLocal, initLocalRecognizer, disposeLocalRecognizer } from './local-asr'
+import { getModelInfoList, inspectLocalModelStatus } from './model-manager'
 import { initLogger, logger, getLogBuffer, clearLogs } from './logger'
 import { matchVoiceCommand } from './voice-commands'
 import { typeText, sendShortcut } from './input-sim'
@@ -66,6 +67,27 @@ async function canControlSystemEvents(): Promise<boolean> {
   }
 }
 
+async function requestMacPermissionsIfNeeded(): Promise<void> {
+  if (process.platform !== 'darwin') return
+  try {
+    const micStatus = systemPreferences.getMediaAccessStatus('microphone')
+    if (micStatus === 'not-determined') {
+      logger.info('[Permission] 请求麦克风权限...')
+      await systemPreferences.askForMediaAccess('microphone')
+    }
+  } catch (e) {
+    logger.warn(`[Permission] 请求麦克风权限失败: ${String(e)}`)
+  }
+
+  try {
+    // 传 true 会触发系统引导弹窗，并让应用进入辅助功能候选列表。
+    const trusted = systemPreferences.isTrustedAccessibilityClient(true)
+    logger.info(`[Permission] 辅助功能授权状态: ${trusted ? 'granted' : 'missing'}`)
+  } catch (e) {
+    logger.warn(`[Permission] 请求辅助功能权限失败: ${String(e)}`)
+  }
+}
+
 function emitPermissionWarning(message: string) {
   logger.warn(`[Permission] ${message}`)
   mainWindow?.webContents.send('permission-warning', message)
@@ -74,7 +96,7 @@ function emitPermissionWarning(message: string) {
 
 function formatPermissionGuide(reason: string, issues: PermissionIssue[]): string {
   const lines = issues.map((item) => `${item.title}：${item.guide}`)
-  return `权限检查(${reason})发现缺失：${lines.join(' ')} 授权后请重启应用。`
+  return `权限检查(${reason})发现缺失：${lines.join(' ')} 如在系统设置里看不到本应用，请先将 App 拖到“应用程序”目录后重启再授权。授权后请重启应用。`
 }
 
 async function openPermissionSettings(issues: PermissionIssue[]): Promise<void> {
@@ -103,6 +125,13 @@ async function collectPermissionIssues(): Promise<PermissionIssue[]> {
   const issues: PermissionIssue[] = []
   if (process.platform !== 'darwin' && process.platform !== 'win32') return issues
   const micStatus = systemPreferences.getMediaAccessStatus('microphone')
+  if (micStatus === 'not-determined') {
+    issues.push({
+      id: 'microphone',
+      title: '麦克风',
+      guide: '系统尚未弹出麦克风授权，请在弹窗中点击“允许”。若未出现弹窗，请重启应用后重试。',
+    })
+  }
   if (micStatus === 'denied' || micStatus === 'restricted') {
     issues.push({
       id: 'microphone',
@@ -138,6 +167,9 @@ async function checkPermissionsAndGuide(reason: string, forcePrompt = false): Pr
   permissionCheckInFlight = true
   lastPermissionCheckAt = now
   try {
+    if (process.platform === 'darwin' && forcePrompt) {
+      await requestMacPermissionsIfNeeded()
+    }
     const issues = await collectPermissionIssues()
     if (issues.length === 0) {
       permissionWarned = false
@@ -359,9 +391,10 @@ function registerHotkey() {
   if (hotkeysRegistered) return
   const config = getConfig()
   const parsed = parseHotkey(config.hotkey.record)
+  logger.info(`[热键] 准备注册: ${config.hotkey.record}`)
 
   if (!parsed.keycode) {
-    console.error('[热键] 无法解析热键:', config.hotkey.record)
+    logger.error(`[热键] 无法解析热键: ${config.hotkey.record}`)
     return
   }
 
@@ -378,7 +411,7 @@ function registerHotkey() {
 
     isRecording = true
     prevApp = await focusController.captureSnapshot('hotkey-keydown')
-    console.log('[热键] 按下，开始录音，前台应用:', prevApp)
+    logger.info(`[热键] 按下，开始录音，前台应用: ${prevApp ?? 'null'}`)
     mainWindow?.webContents.send('hotkey-state', 'recording')
   })
 
@@ -388,11 +421,12 @@ function registerHotkey() {
     if (e.keycode !== parsed.keycode) return
 
     isRecording = false
-    console.log('[热键] 松开，触发识别')
+    logger.info('[热键] 松开，触发识别')
     mainWindow?.webContents.send('hotkey-stop-recording', prevApp)
   })
 
   try {
+    logger.info('[热键] 启动 uiohook...')
     uIOhook.start()
     logger.info('[热键] uiohook 已启用（按住说话，松开识别）')
   } catch (e) {
@@ -411,32 +445,35 @@ function registerHotkey() {
   })
 
   if (registered) {
-    console.log('[热键] 已注册拦截:', config.hotkey.record)
+    logger.info(`[热键] 已注册拦截: ${config.hotkey.record}`)
   } else {
-    console.error('[热键] 拦截注册失败，被其它应用占用或系统不允许:', config.hotkey.record)
+    logger.error(`[热键] 拦截注册失败，被其它应用占用或系统不允许: ${config.hotkey.record}`)
   }
 
+  logger.info(`[VAD] 注册切换快捷键: ${VAD_TOGGLE_HOTKEY}`)
   const vadToggleRegistered = globalShortcut.register(VAD_TOGGLE_HOTKEY, () => {
     const enabled = setVadEnabledState(!vadEnabled, true)
     logger.info(`[VAD] 通过快捷键 ${VAD_TOGGLE_HOTKEY} 切换为 ${enabled ? '开启' : '关闭'}`)
   })
   if (vadToggleRegistered) {
-    console.log('[VAD] 已注册切换快捷键:', VAD_TOGGLE_HOTKEY)
+    logger.info(`[VAD] 已注册切换快捷键: ${VAD_TOGGLE_HOTKEY}`)
   } else {
-    console.error('[VAD] 切换快捷键注册失败:', VAD_TOGGLE_HOTKEY)
+    logger.error(`[VAD] 切换快捷键注册失败: ${VAD_TOGGLE_HOTKEY}`)
   }
 
   // 划词重写功能热键
+  logger.info('[Rewrite] 注册快捷键: Alt+W')
   const rewriteRegistered = globalShortcut.register('Alt+W', () => {
     logger.info('[Rewrite] 热键 Alt+W 触发')
     triggerRewrite()
   })
   if (rewriteRegistered) {
-    console.log('[Rewrite] 已注册快捷键: Alt+W')
+    logger.info('[Rewrite] 已注册快捷键: Alt+W')
   } else {
-    console.error('[Rewrite] 快捷键注册失败: Alt+W')
+    logger.error('[Rewrite] 快捷键注册失败: Alt+W')
   }
   hotkeysRegistered = true
+  logger.info('[热键] 注册流程完成')
 }
 
 // ── IPC 处理 ──
@@ -447,21 +484,13 @@ function setupIpc() {
 
   ipcMain.handle('get-config', () => getConfig())
   ipcMain.handle('get-frontmost-app', async () => {
-    const snapshot = await focusController.captureSnapshot('ipc-get-frontmost')
-    logger.info(`[IPC] get-frontmost-app -> ${snapshot ?? 'null'}`)
-    return snapshot
+    return focusController.captureSnapshot('ipc-get-frontmost')
   })
   ipcMain.handle('capture-focus-snapshot', async (_event, reason: string | undefined) => {
-    const snapshot = await focusController.captureSnapshot(reason ? `ipc-capture:${reason}` : 'ipc-capture')
-    logger.info(`[IPC] capture-focus-snapshot reason=${reason ?? 'unknown'} -> ${snapshot ?? 'null'}`)
-    return snapshot
+    return focusController.captureSnapshot(reason ? `ipc-capture:${reason}` : 'ipc-capture')
   })
   ipcMain.handle('restore-focus', async (_event, appId: string | null) => {
-    logger.info(`[IPC] restore-focus request=${appId ?? 'null'}`)
     await focusController.restore(appId, 'ipc-restore')
-  })
-  ipcMain.handle('debug-log', (_event, msg: string) => {
-    logger.info(msg)
   })
 
   ipcMain.handle('save-config', (_event, cfg: AppConfig) => {
@@ -568,15 +597,20 @@ function setupIpc() {
   // ── 模型管理 IPC ──
   ipcMain.handle('get-model-statuses', async () => {
     const models = getModelInfoList()
-    const results = []
-    for (const m of models) {
-      let downloaded = false
-      try {
-        downloaded = await checkModelDownloaded(m.id)
-      } catch { /* sidecar 未就绪，默认未下载 */ }
-      results.push({ ...m, downloaded })
+    if (!Array.isArray(models) || models.length === 0) {
+      logger.warn('[Model] get-model-statuses: 模型列表为空')
+      return []
     }
+    const results = models.map((m) => {
+      const status = inspectLocalModelStatus(m)
+      return { ...m, downloaded: status.downloaded, incomplete: status.incomplete, dependencies: status.dependencies }
+    })
     return results
+  })
+
+  ipcMain.handle('get-model-catalog', () => {
+    const models = getModelInfoList()
+    return Array.isArray(models) ? models : []
   })
 
   ipcMain.handle('download-model', async (_event, modelId: string) => {
@@ -591,7 +625,7 @@ function setupIpc() {
       await initLocalRecognizer(modelId, sendProgress)
       return { success: true }
     } catch (e) {
-      logger.error(`模型准备失败: ${e}`)
+      logger.error(`模型准备失败(modelId=${modelId}): ${e instanceof Error ? (e.stack || e.message) : String(e)}`)
       return { success: false, error: String(e) }
     }
   })
@@ -604,6 +638,10 @@ function setupIpc() {
   // ── 日志 IPC ──
   ipcMain.handle('get-logs', () => getLogBuffer())
   ipcMain.handle('clear-logs', () => clearLogs())
+  ipcMain.handle('copy-to-clipboard', (_event, text: string) => {
+    clipboard.writeText(String(text ?? ''))
+    return true
+  })
 
   ipcMain.handle('get-window-position', () => mainWindow?.getPosition() || [0, 0])
   ipcMain.handle('set-window-position', (_event, x: number, y: number) => {

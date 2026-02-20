@@ -26,7 +26,7 @@
     "vitest": "^4.0.18"
   },
   "build": {
-    "appId": "com.logene.voice-input",
+    "appId": "com.logene.voice-input.electron",
     "productName": "Logene Voice Input",
     "mac": {
       "target": "dmg",
@@ -41,8 +41,8 @@
     },
     "extraResources": [
       {
-        "from": "dist/sidecar/${platform}/",
-        "to": "sidecar/${platform}/",
+        "from": "dist/sidecar/",
+        "to": "sidecar/",
         "filter": ["**/*"]
       }
     ]

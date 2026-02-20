@@ -6,6 +6,23 @@ import { MODELS, ModelInfo } from './model-manager'
 import { getConfig } from './config'
 import { normalizeAsrText } from './asr-text'
 
+export interface DependencyStatus {
+  role: string
+  modelName: string
+  backend: string
+  quantize: boolean
+  cached: boolean
+  complete: boolean
+  missingFiles?: string[]
+  issue?: string
+}
+
+export interface ModelCheckStatus {
+  downloaded: boolean
+  incomplete: boolean
+  dependencies: DependencyStatus[]
+}
+
 // sidecar 子进程
 let sidecar: ChildProcess | null = null
 let currentModelId: string | null = null
@@ -16,6 +33,15 @@ const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) 
 let stdoutBuffer = ''
 // init 进度回调（由 initLocalRecognizer 设置）
 let onInitProgress: ((data: { progress: number; status?: string }) => void) | null = null
+const SIDECAR_START_TIMEOUT_MS = 15000
+
+function buildSidecarErrorMessage(msg: Record<string, any>): string {
+  const base = typeof msg.error === 'string' && msg.error.trim() ? msg.error.trim() : 'sidecar 返回错误'
+  const details = typeof msg.details === 'string' ? msg.details.trim() : ''
+  if (!details) return base
+  const firstLine = details.split('\n').find((line) => line.trim()) || ''
+  return firstLine ? `${base} (${firstLine})` : base
+}
 
 // 启动 sidecar 进程
 function spawnSidecar(): Promise<void> {
@@ -46,6 +72,27 @@ function spawnSidecar(): Promise<void> {
     })
 
     let started = false
+    let settled = false
+    const finishResolve = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    const finishReject = (err: Error) => {
+      if (settled) return
+      settled = true
+      reject(err)
+    }
+
+    const startTimer = setTimeout(() => {
+      if (started || settled) return
+      logger.error(`sidecar 启动超时 (${SIDECAR_START_TIMEOUT_MS}ms)`)
+      try {
+        child.kill()
+      } catch { /* ignore */ }
+      cleanupSidecar()
+      finishReject(new Error(`sidecar 启动超时 (${SIDECAR_START_TIMEOUT_MS}ms)`))
+    }, SIDECAR_START_TIMEOUT_MS)
 
     child.stdout!.on('data', (chunk: Buffer) => {
       stdoutBuffer += chunk.toString('utf-8')
@@ -57,12 +104,18 @@ function spawnSidecar(): Promise<void> {
       for (const line of lines) {
         const trimmed = line.trim()
         if (!trimmed) continue
+        // 第三方库偶尔会向 stdout 输出普通文本（非协议 JSON），避免误报为解析失败。
+        if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+          logger.info(`sidecar stdout: ${trimmed}`)
+          continue
+        }
         try {
           const msg = JSON.parse(trimmed)
           // 启动就绪信号
           if (msg.ready && !started) {
             started = true
-            resolve()
+            clearTimeout(startTimer)
+            finishResolve()
             continue
           }
           // 匹配请求 ID
@@ -80,7 +133,9 @@ function spawnSidecar(): Promise<void> {
             if (msg.ok) {
               cb.resolve(msg)
             } else {
-              cb.reject(new Error(msg.error || 'sidecar 返回错误'))
+              const errMsg = buildSidecarErrorMessage(msg)
+              logger.error(`sidecar 请求失败(id=${id}): ${errMsg}`)
+              cb.reject(new Error(errMsg))
             }
           }
         } catch {
@@ -95,7 +150,8 @@ function spawnSidecar(): Promise<void> {
 
     child.on('error', (err) => {
       logger.error(`sidecar 进程错误: ${err.message}`)
-      if (!started) reject(err)
+      clearTimeout(startTimer)
+      if (!started) finishReject(err)
       cleanupSidecar()
     })
 
@@ -107,7 +163,8 @@ function spawnSidecar(): Promise<void> {
       }
       pending.clear()
       cleanupSidecar()
-      if (!started) reject(new Error(`sidecar 启动失败 (code=${code})`))
+      clearTimeout(startTimer)
+      if (!started) finishReject(new Error(`sidecar 启动失败 (code=${code})`))
     })
 
     sidecar = child
@@ -215,11 +272,19 @@ export async function initLocalRecognizer(
       modelName: modelInfo.funasrModel,
       backend: modelInfo.backend,
       quantize: Boolean(modelInfo.quantized),
+      vadModelName: modelInfo.vadModel,
+      vadBackend: modelInfo.vadBackend,
+      vadQuantize: Boolean(modelInfo.vadQuantized),
+      puncModelName: modelInfo.puncModel,
+      puncBackend: modelInfo.puncBackend,
       hotwords,
     }, 600000)
   } catch (e) {
     currentModelId = null
-    throw new Error(`本地模型初始化失败（${modelInfo.name}）: ${String(e)}`)
+    const detail = e instanceof Error ? e.message : String(e)
+    logger.error(`[ASR] 本地模型初始化失败(${modelInfo.name}): ${detail}`)
+    const firstLine = detail.split('\n').find((line) => line.trim()) || detail
+    throw new Error(`本地模型初始化失败（${modelInfo.name}）: ${firstLine}`)
   } finally {
     onInitProgress = null
   }
@@ -239,6 +304,12 @@ export async function recognizeLocal(wavBuffer: Buffer): Promise<string> {
     wavBase64: wavBuffer.toString('base64'),
   })
 
+  if (typeof resp?.segmentCount === 'number') {
+    logger.info(`[ASR] sidecar stats: segmentCount=${resp.segmentCount}, asrPasses=${resp?.asrPasses ?? '?'}`)
+  }
+  if (typeof resp?.rawText === 'string') {
+    logger.info(`[ASR] sidecar rawText: "${resp.rawText}"`)
+  }
   const text = normalizeAsrText(resp?.text)
   logger.info(`本地识别结果: "${text}"`)
   return text
@@ -246,8 +317,15 @@ export async function recognizeLocal(wavBuffer: Buffer): Promise<string> {
 
 // 通过 sidecar 检查模型是否已下载
 export async function checkModelDownloaded(modelId: string): Promise<boolean> {
+  const status = await checkModelStatus(modelId)
+  return status.downloaded
+}
+
+export async function checkModelStatus(modelId: string): Promise<ModelCheckStatus> {
   const modelInfo = MODELS.find(m => m.id === modelId)
-  if (!modelInfo) return false
+  if (!modelInfo) {
+    return { downloaded: false, incomplete: false, dependencies: [] }
+  }
 
   await spawnSidecar()
 
@@ -257,10 +335,19 @@ export async function checkModelDownloaded(modelId: string): Promise<boolean> {
       modelName: modelInfo.funasrModel,
       backend: modelInfo.backend,
       quantize: Boolean(modelInfo.quantized),
+      vadModelName: modelInfo.vadModel,
+      vadBackend: modelInfo.vadBackend,
+      vadQuantize: Boolean(modelInfo.vadQuantized),
+      puncModelName: modelInfo.puncModel,
+      puncBackend: modelInfo.puncBackend,
     }, 10000)
-    return Boolean(resp.downloaded)
+    return {
+      downloaded: Boolean(resp.downloaded),
+      incomplete: Boolean(resp.incomplete),
+      dependencies: Array.isArray(resp.dependencies) ? resp.dependencies : [],
+    }
   } catch {
-    return false
+    return { downloaded: false, incomplete: false, dependencies: [] }
   }
 }
 

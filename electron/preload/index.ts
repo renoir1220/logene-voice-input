@@ -10,7 +10,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   restoreFocus: (appId: string | null) => ipcRenderer.invoke('restore-focus', appId),
   getVadEnabled: () => ipcRenderer.invoke('get-vad-enabled'),
   setVadEnabled: (enabled: boolean) => ipcRenderer.invoke('set-vad-enabled', enabled),
-  debugLog: (msg: string) => ipcRenderer.invoke('debug-log', msg),
   recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) =>
     ipcRenderer.invoke('recognize-wav', wavBuffer, prevAppId),
   switchMode: (mode: 'float' | 'dashboard') => ipcRenderer.invoke('switch-mode', mode),
@@ -19,12 +18,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 模型管理
   getModelStatuses: () => ipcRenderer.invoke('get-model-statuses'),
+  getModelCatalog: () => ipcRenderer.invoke('get-model-catalog'),
   downloadModel: (modelId: string) => ipcRenderer.invoke('download-model', modelId),
   deleteModel: (modelId: string) => ipcRenderer.invoke('delete-model', modelId),
 
   // 日志
   getLogs: () => ipcRenderer.invoke('get-logs'),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
+  copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text),
 
   // 重写专用通道
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),

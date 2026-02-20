@@ -33,6 +33,11 @@ vi.mock('../../electron/main/model-manager', () => ({
       size: '~1 GB',
       backend: 'funasr_torch',
       hotwordFormat: 'weighted-lines',
+      vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
+      vadBackend: 'funasr_onnx_vad',
+      vadQuantized: true,
+      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+      puncBackend: 'funasr_torch_punc',
     },
     {
       id: 'paraformer-zh-contextual-quant',
@@ -43,6 +48,11 @@ vi.mock('../../electron/main/model-manager', () => ({
       backend: 'funasr_onnx_contextual',
       hotwordFormat: 'space-separated',
       quantized: true,
+      vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
+      vadBackend: 'funasr_onnx_vad',
+      vadQuantized: true,
+      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+      puncBackend: 'funasr_torch_punc',
     },
     {
       id: 'sensevoice-small',
@@ -52,6 +62,11 @@ vi.mock('../../electron/main/model-manager', () => ({
       size: '~450 MB',
       backend: 'funasr_torch',
       hotwordFormat: 'weighted-lines',
+      vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
+      vadBackend: 'funasr_onnx_vad',
+      vadQuantized: true,
+      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+      puncBackend: 'funasr_torch_punc',
     },
   ],
 }))
@@ -114,6 +129,11 @@ describe('local-asr (sidecar + FunASR)', () => {
     const req = JSON.parse(writeCall)
     expect(req.cmd).toBe('init')
     expect(req.modelName).toBe('paraformer-zh')
+    expect(req.vadModelName).toBe('iic/speech_fsmn_vad_zh-cn-16k-common-onnx')
+    expect(req.vadBackend).toBe('funasr_onnx_vad')
+    expect(req.vadQuantize).toBe(true)
+    expect(req.puncModelName).toBe('iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch')
+    expect(req.puncBackend).toBe('funasr_torch_punc')
     // 所有模型都传热词
     expect(req.hotwords).toContain('肉眼所见')
     expect(req.hotwords).toContain('鳞状上皮')
@@ -138,6 +158,11 @@ describe('local-asr (sidecar + FunASR)', () => {
     const req = JSON.parse(writeCall)
     expect(req.cmd).toBe('init')
     expect(req.modelName).toBe('iic/SenseVoiceSmall')
+    expect(req.vadModelName).toBe('iic/speech_fsmn_vad_zh-cn-16k-common-onnx')
+    expect(req.vadBackend).toBe('funasr_onnx_vad')
+    expect(req.vadQuantize).toBe(true)
+    expect(req.puncModelName).toBe('iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch')
+    expect(req.puncBackend).toBe('funasr_torch_punc')
     expect(req.hotwords).toContain('肉眼所见')
     mockProc._emit('stdout', JSON.stringify({ id: req.id, ok: true }))
 
@@ -159,6 +184,9 @@ describe('local-asr (sidecar + FunASR)', () => {
     expect(req.modelName).toBe('iic/speech_paraformer-large-contextual_asr_nat-zh-cn-16k-common-vocab8404-onnx')
     expect(req.backend).toBe('funasr_onnx_contextual')
     expect(req.quantize).toBe(true)
+    expect(req.vadBackend).toBe('funasr_onnx_vad')
+    expect(req.vadQuantize).toBe(true)
+    expect(req.puncBackend).toBe('funasr_torch_punc')
     expect(req.hotwords).toContain('肉眼所见')
     expect(req.hotwords).toContain('鳞状上皮')
     expect(req.hotwords).toContain('萎缩性胃炎')
@@ -285,10 +313,48 @@ describe('local-asr (sidecar + FunASR)', () => {
     const req = JSON.parse(writeCall)
     expect(req.cmd).toBe('check')
     expect(req.modelName).toBe('paraformer-zh')
+    expect(req.vadModelName).toBe('iic/speech_fsmn_vad_zh-cn-16k-common-onnx')
+    expect(req.vadBackend).toBe('funasr_onnx_vad')
+    expect(req.vadQuantize).toBe(true)
+    expect(req.puncModelName).toBe('iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch')
+    expect(req.puncBackend).toBe('funasr_torch_punc')
     mockProc._emit('stdout', JSON.stringify({ id: req.id, ok: true, downloaded: true }))
 
     const result = await checkPromise
     expect(result).toBe(true)
+  })
+
+  it('checkModelStatus 返回完整性详情', async () => {
+    const { checkModelStatus } = await import('../../electron/main/local-asr')
+
+    const checkPromise = checkModelStatus('paraformer-zh')
+    await new Promise(r => setTimeout(r, 10))
+    mockProc._emit('stdout', '{"ready":true}')
+    await new Promise(r => setTimeout(r, 10))
+
+    const req = JSON.parse(mockProc.stdin.write.mock.calls[0][0])
+    mockProc._emit('stdout', JSON.stringify({
+      id: req.id,
+      ok: true,
+      downloaded: false,
+      incomplete: true,
+      dependencies: [
+        {
+          role: 'ASR',
+          modelName: 'paraformer-zh',
+          backend: 'funasr_torch',
+          quantize: false,
+          cached: true,
+          complete: false,
+          issue: '缺少文件',
+        },
+      ],
+    }))
+
+    const status = await checkPromise
+    expect(status.downloaded).toBe(false)
+    expect(status.incomplete).toBe(true)
+    expect(status.dependencies[0].role).toBe('ASR')
   })
 
   it('recognizeLocal 在 sidecar 返回错误时应抛出异常', async () => {

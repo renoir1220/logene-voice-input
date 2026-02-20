@@ -13,10 +13,15 @@ function sleep(ms: number): Promise<void> {
 export class FocusController {
   private lastExternalAppId: string | null = null
   private tracker: NodeJS.Timeout | null = null
+  private trackerInFlight = false
   private readonly trackerIntervalMs: number
+  private readonly debugTrace: boolean
+  private lastFrontmostWarnAt = 0
 
   constructor(private readonly options: FocusControllerOptions) {
-    this.trackerIntervalMs = options.trackerIntervalMs ?? 160
+    // 前台应用检测涉及子进程调用，避免过高频率造成主进程压力。
+    this.trackerIntervalMs = options.trackerIntervalMs ?? 300
+    this.debugTrace = process.env.LOGENE_DEBUG_FOCUS === '1'
   }
 
   getLastExternalAppId(): string | null {
@@ -26,7 +31,11 @@ export class FocusController {
   startTracking() {
     if (this.tracker) return
     const tick = () => {
-      void this.captureSnapshot('tracker', false).catch(() => { /* ignore */ })
+      if (this.trackerInFlight) return
+      this.trackerInFlight = true
+      void this.captureSnapshot('tracker', false)
+        .catch(() => { /* ignore */ })
+        .finally(() => { this.trackerInFlight = false })
     }
     tick()
     this.tracker = setInterval(tick, this.trackerIntervalMs)
@@ -36,6 +45,7 @@ export class FocusController {
     if (!this.tracker) return
     clearInterval(this.tracker)
     this.tracker = null
+    this.trackerInFlight = false
   }
 
   async captureSnapshot(reason: string, logResult = true): Promise<string | null> {
@@ -44,7 +54,7 @@ export class FocusController {
       ? current
       : this.lastExternalAppId
 
-    if (logResult) {
+    if (logResult && this.debugTrace) {
       logger.info(
         `[Focus] snapshot reason=${reason} current=${current ?? 'null'} lastExternal=${this.lastExternalAppId ?? 'null'} chosen=${chosen ?? 'null'}`,
       )
@@ -55,26 +65,30 @@ export class FocusController {
   async restore(snapshot: string | null, reason: string): Promise<void> {
     const target = snapshot || this.lastExternalAppId
     if (!target) {
-      logger.info(`[Focus] restore skipped reason=${reason} target=null`)
+      if (this.debugTrace) logger.info(`[Focus] restore skipped reason=${reason} target=null`)
       return
     }
 
-    logger.info(
-      `[Focus] restore begin reason=${reason} target=${target} snapshot=${snapshot ?? 'null'} lastExternal=${this.lastExternalAppId ?? 'null'}`,
-    )
+    if (this.debugTrace) {
+      logger.info(
+        `[Focus] restore begin reason=${reason} target=${target} snapshot=${snapshot ?? 'null'} lastExternal=${this.lastExternalAppId ?? 'null'}`,
+      )
+    }
 
     for (let i = 0; i < 3; i += 1) {
       await restoreFocus(target)
       const current = await this.getCurrentFrontmost()
-      logger.info(`[Focus] restore attempt=${i + 1} reason=${reason} target=${target} current=${current ?? 'null'}`)
+      if (this.debugTrace) {
+        logger.info(`[Focus] restore attempt=${i + 1} reason=${reason} target=${target} current=${current ?? 'null'}`)
+      }
       if (current === target || (current && !this.options.isSelfAppId(current))) {
-        logger.info(`[Focus] restore success attempt=${i + 1} reason=${reason} target=${target}`)
+        if (this.debugTrace) logger.info(`[Focus] restore success attempt=${i + 1} reason=${reason} target=${target}`)
         return
       }
       await sleep(70)
     }
 
-    logger.info(`[Focus] restore exhausted reason=${reason} target=${target}`)
+    logger.warn(`[Focus] restore exhausted reason=${reason} target=${target}`)
   }
 
   private async getCurrentFrontmost(): Promise<string | null> {
@@ -85,7 +99,11 @@ export class FocusController {
       }
       return appId
     } catch (error) {
-      logger.warn(`[Focus] get-frontmost failed: ${String(error)}`)
+      const now = Date.now()
+      if (now - this.lastFrontmostWarnAt >= 10000) {
+        this.lastFrontmostWarnAt = now
+        logger.warn(`[Focus] get-frontmost failed: ${String(error)}`)
+      }
       return null
     }
   }

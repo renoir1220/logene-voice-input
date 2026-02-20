@@ -9,7 +9,9 @@ PyInstaller 打包脚本 — 将 asr_server.py 打包为平台特定的单文件
 import platform
 import subprocess
 import sys
+from importlib.util import find_spec
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "python" / "asr_server.py"
@@ -23,6 +25,21 @@ def get_platform_name() -> str:
         return "win"
     else:
         return "linux"
+
+
+def get_add_data_sep() -> str:
+    return ";" if platform.system().lower() == "windows" else ":"
+
+
+def try_get_funasr_version_file() -> Optional[Path]:
+    spec = find_spec("funasr")
+    if not spec or not spec.origin:
+        return None
+    pkg_dir = Path(spec.origin).resolve().parent
+    version_file = pkg_dir / "version.txt"
+    if version_file.exists():
+        return version_file
+    return None
 
 
 def main():
@@ -41,8 +58,19 @@ def main():
         "--specpath", str(ROOT / "build"),
         "--clean",
         "--noconfirm",
+        "--hidden-import", "funasr.tokenizer.char_tokenizer",
+        "--hidden-import", "funasr.models.ct_transformer.model",
         str(SCRIPT),
     ]
+
+    funasr_version = try_get_funasr_version_file()
+    if funasr_version:
+        add_data = f"{funasr_version}{get_add_data_sep()}funasr"
+        cmd.insert(-1, "--add-data")
+        cmd.insert(-1, add_data)
+        print(f"附加 funasr 数据文件: {funasr_version}")
+    else:
+        print("未找到 funasr/version.txt，跳过附加数据文件")
 
     print(f"执行: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)

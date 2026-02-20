@@ -7,6 +7,7 @@ type AppLike = Pick<typeof ElectronApp, 'getName'> & {
 const KNOWN_SELF_APP_IDS = new Set([
   'com.github.Electron',
   'com.logene.voice-input',
+  'com.logene.voice-input.electron',
 ])
 
 export function isSelfAppId(

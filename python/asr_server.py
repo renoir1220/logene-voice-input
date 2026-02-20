@@ -3,33 +3,56 @@
 ASR Sidecar 进程 — 基于 FunASR，通过 stdin/stdout JSON 协议与 Electron 主进程通信。
 
 协议格式（每行一个 JSON）：
-  → {"id":1, "cmd":"init", "modelName":"paraformer-zh", "backend":"funasr_torch", "quantize":false, "hotwords":"肉眼所见 20\n鳞状上皮 20"}
-  ← {"id":1, "progress":30}          （下载进度，可多次）
+  → {
+      "id":1,
+      "cmd":"init",
+      "modelName":"paraformer-zh",
+      "backend":"funasr_torch",
+      "quantize":false,
+      "vadModelName":"iic/speech_fsmn_vad_zh-cn-16k-common-onnx",
+      "vadBackend":"funasr_onnx_vad",
+      "vadQuantize":true,
+      "puncModelName":"iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+      "puncBackend":"funasr_torch_punc",
+      "hotwords":"肉眼所见 20\\n鳞状上皮 20"
+    }
+  ← {"id":1, "progress":30}
   ← {"id":1, "ok":true}
-
-  → {"id":2, "cmd":"recognize", "wavBase64":"UklGR..."}
-  ← {"id":2, "ok":true, "text":"肉眼所见灰白色组织"}
-
-  → {"id":3, "cmd":"check", "modelName":"paraformer-zh"}
-  ← {"id":3, "ok":true, "downloaded":true}
-
-  → {"id":4, "cmd":"dispose"}
-  ← {"id":4, "ok":true}
 """
 
-import sys
-import json
 import base64
+import inspect
+import json
 import os
-import tempfile
-import traceback
-import threading
 import shutil
+import sys
+import tempfile
+import threading
+import traceback
 
 import numpy as np
 
-# 当前模型实例
-model = None
+
+_orig_getsourcelines = inspect.getsourcelines
+
+
+def _safe_getsourcelines(obj):
+    try:
+        return _orig_getsourcelines(obj)
+    except OSError:
+        # PyInstaller onefile 下某些模块没有可回溯源码；返回占位行避免注册器崩溃。
+        return ([""], 1)
+
+
+inspect.getsourcelines = _safe_getsourcelines
+
+# 当前运行时模型
+asr_model = None
+vad_model = None
+punc_model = None
+asr_backend = "funasr_torch"
+asr_hotwords_str = ""
+
 # 当前热词临时文件路径（用于清理）
 _hotword_tmp = None
 # 兼容目录（某些量化模型文件命名与 funasr_onnx 预期不一致时使用）
@@ -39,46 +62,9 @@ _stdout_lock = threading.Lock()
 
 
 def send_json(obj: dict):
-    """线程安全地向 stdout 写一行 JSON"""
     line = json.dumps(obj, ensure_ascii=False)
     with _stdout_lock:
         print(line, flush=True)
-
-
-def download_model_with_progress(model_name: str, msg_id: int, backend: str, quantize: bool):
-    """使用 modelscope snapshot_download 预下载模型，上报进度"""
-    from modelscope.hub.snapshot_download import snapshot_download
-
-    models_to_download = [model_name]
-
-    # torch 全量 Paraformer 还需要标点模型
-    if backend == "funasr_torch" and "paraformer" in model_name.lower():
-        models_to_download.append("ct-punc")
-
-    total = len(models_to_download)
-    for i, m in enumerate(models_to_download):
-        base_progress = int((i / total) * 100)
-        next_progress = int(((i + 1) / total) * 100)
-
-        try:
-            # 尝试用 funasr 的方式解析真实 model_id
-            resolved = resolve_model_id(m)
-            if is_model_cached(resolved):
-                if backend.startswith("funasr_onnx"):
-                    validate_onnx_files(get_model_cache_path(resolved), backend, quantize)
-                send_json({"id": msg_id, "progress": next_progress})
-                continue
-
-            send_json({"id": msg_id, "progress": base_progress, "status": f"下载 {m}..."})
-            model_dir = snapshot_download(resolved)
-            if backend.startswith("funasr_onnx"):
-                validate_onnx_files(model_dir, backend, quantize)
-            send_json({"id": msg_id, "progress": next_progress})
-        except Exception as e:
-            # 下载失败不阻断，AutoModel 会再尝试
-            sys.stderr.write(f"预下载 {m} 失败: {e}\n")
-            sys.stderr.flush()
-            send_json({"id": msg_id, "progress": next_progress})
 
 
 def resolve_model_id(model_name: str) -> str:
@@ -98,11 +84,8 @@ def get_model_cache_path(model_id: str) -> str:
 
 
 def is_model_cached(model_id: str) -> bool:
-    """检查模型是否已在 ModelScope 缓存中"""
-    # model_id 如 "iic/SenseVoiceSmall" → 缓存路径 models/iic/SenseVoiceSmall
     model_path = get_model_cache_path(model_id)
     if os.path.isdir(model_path):
-        # 检查目录非空
         for _, _, files in os.walk(model_path):
             if files:
                 return True
@@ -110,6 +93,14 @@ def is_model_cached(model_id: str) -> bool:
 
 
 def validate_onnx_files(model_dir: str, backend: str, quantize: bool):
+    missing = get_missing_onnx_files(model_dir, backend, quantize)
+    if missing:
+        raise RuntimeError(
+            f"ONNX 模型文件缺失: {', '.join(missing)}。请确认模型仓库包含完整 ONNX 文件。"
+        )
+
+
+def get_missing_onnx_files(model_dir: str, backend: str, quantize: bool):
     missing = []
     if quantize:
         if not os.path.exists(os.path.join(model_dir, "model_quant.onnx")):
@@ -127,11 +118,7 @@ def validate_onnx_files(model_dir: str, backend: str, quantize: bool):
         else:
             if not os.path.exists(os.path.join(model_dir, "model_eb.onnx")):
                 missing.append("model_eb.onnx")
-
-    if missing:
-        raise RuntimeError(
-            f"ONNX 模型文件缺失: {', '.join(missing)}。请确认模型仓库包含完整 ONNX 文件，避免回退到 .pt 导出。"
-        )
+    return missing
 
 
 def resolve_model_dir(model_name: str) -> str:
@@ -186,6 +173,15 @@ def cleanup_tmp_files():
         shutil.rmtree(path, ignore_errors=True)
 
 
+def reset_runtime_models():
+    global asr_model, vad_model, punc_model, asr_backend, asr_hotwords_str
+    asr_model = None
+    vad_model = None
+    punc_model = None
+    asr_backend = "funasr_torch"
+    asr_hotwords_str = ""
+
+
 def normalize_hotwords_for_onnx(hotwords: str) -> str:
     words = []
     seen = set()
@@ -202,7 +198,6 @@ def normalize_hotwords_for_onnx(hotwords: str) -> str:
             if word and word not in seen:
                 seen.add(word)
                 words.append(word)
-    # ContextualParaformer 空热词会异常，给一个中性占位符
     if not words:
         words.append("。")
     return " ".join(words)
@@ -237,57 +232,7 @@ def normalize_result_text(value) -> str:
     return str(value)
 
 
-def create_model(model_name: str, hotwords: str, backend: str, quantize: bool):
-    if backend == "funasr_onnx_contextual":
-        try:
-            from funasr_onnx import ContextualParaformer
-        except ImportError as e:
-            raise RuntimeError("缺少 funasr_onnx 依赖，请安装 requirements.txt 后重试") from e
-
-        model_dir = resolve_model_dir(model_name)
-        model_dir, effective_quantize = adapt_contextual_quant_model_dir(
-            model_dir, bool(quantize)
-        )
-        model = ContextualParaformer(
-            model_dir=model_dir,
-            quantize=effective_quantize,
-            device_id="-1",
-            intra_op_num_threads=4,
-        )
-        # 部分 funasr_onnx 版本未初始化 language 字段，运行 __call__ 时会报错。
-        if not hasattr(model, "language"):
-            model.language = "zh-cn"
-        return model
-
-    if backend == "funasr_onnx_paraformer":
-        try:
-            from funasr_onnx import Paraformer
-        except ImportError as e:
-            raise RuntimeError("缺少 funasr_onnx 依赖，请安装 requirements.txt 后重试") from e
-
-        return Paraformer(
-            model_dir=resolve_model_dir(model_name),
-            quantize=bool(quantize),
-            device_id="-1",
-            intra_op_num_threads=4,
-        )
-
-    # 默认 torch 后端
-    from funasr import AutoModel
-
-    kwargs = {
-        "model": model_name,
-        "device": "cpu",
-    }
-    if "paraformer" in model_name.lower():
-        # 不加 VAD：Electron 端已做切段，保留标点
-        kwargs["punc_model"] = "ct-punc"
-
-    return AutoModel(**kwargs)
-
-
 def write_hotwords_tmp(hotwords: str) -> str:
-    """将热词字符串写入临时文件，返回路径"""
     global _hotword_tmp
     if _hotword_tmp and os.path.exists(_hotword_tmp):
         os.unlink(_hotword_tmp)
@@ -304,14 +249,96 @@ def write_hotwords_tmp(hotwords: str) -> str:
 
 
 def decode_wav(wav_bytes: bytes) -> np.ndarray:
-    """解析 WAV 字节，返回 float32 采样数组（跳过 44 字节头）"""
     pcm = wav_bytes[44:]
     samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
     return samples
 
 
-def check_model_downloaded(model_name: str, backend: str, quantize: bool) -> bool:
-    """检查模型是否已在缓存中"""
+def build_dependencies(
+    model_name: str,
+    backend: str,
+    quantize: bool,
+    vad_model_name: str,
+    vad_backend: str,
+    vad_quantize: bool,
+    punc_model_name: str,
+    punc_backend: str,
+):
+    deps = [
+        {
+            "role": "ASR",
+            "modelName": model_name,
+            "backend": backend,
+            "quantize": bool(quantize),
+        }
+    ]
+    if vad_model_name:
+        deps.append(
+            {
+                "role": "VAD",
+                "modelName": vad_model_name,
+                "backend": vad_backend,
+                "quantize": bool(vad_quantize),
+            }
+        )
+    if punc_model_name:
+        deps.append(
+            {
+                "role": "PUNC",
+                "modelName": punc_model_name,
+                "backend": punc_backend,
+                "quantize": False,
+            }
+        )
+    return deps
+
+
+def download_model_with_progress(dependencies, msg_id: int):
+    from modelscope.hub.snapshot_download import snapshot_download
+
+    total = len(dependencies)
+    if total == 0:
+        send_json({"id": msg_id, "progress": 90})
+        return
+
+    for i, dep in enumerate(dependencies):
+        model_name = dep["modelName"]
+        backend = dep.get("backend", "")
+        quantize = bool(dep.get("quantize", False))
+        role = dep.get("role", "Model")
+        base_progress = int((i / total) * 90)
+        next_progress = int(((i + 1) / total) * 90)
+
+        try:
+            resolved = resolve_model_id(model_name)
+            if is_model_cached(resolved):
+                if backend.startswith("funasr_onnx"):
+                    validate_onnx_files(get_model_cache_path(resolved), backend, quantize)
+                send_json({"id": msg_id, "progress": next_progress})
+                continue
+
+            send_json(
+                {
+                    "id": msg_id,
+                    "progress": base_progress,
+                    "status": f"下载{role}模型 {model_name}...",
+                }
+            )
+            model_dir = snapshot_download(resolved)
+            if backend.startswith("funasr_onnx"):
+                validate_onnx_files(model_dir, backend, quantize)
+            send_json({"id": msg_id, "progress": next_progress})
+        except Exception as e:
+            sys.stderr.write(f"预下载 {role} 模型 {model_name} 失败: {e}\n")
+            sys.stderr.flush()
+            send_json({"id": msg_id, "progress": next_progress})
+
+
+def is_dependency_downloaded(dep) -> bool:
+    model_name = dep["modelName"]
+    backend = dep.get("backend", "")
+    quantize = bool(dep.get("quantize", False))
+
     resolved = resolve_model_id(model_name)
     if is_model_cached(resolved):
         if backend.startswith("funasr_onnx"):
@@ -320,10 +347,7 @@ def check_model_downloaded(model_name: str, backend: str, quantize: bool) -> boo
             except Exception:
                 return False
         return True
-    # 对于 iic/ 开头的模型名，直接检查
-    if model_name != resolved:
-        if not is_model_cached(model_name):
-            return False
+    if model_name != resolved and is_model_cached(model_name):
         if backend.startswith("funasr_onnx"):
             try:
                 validate_onnx_files(get_model_cache_path(model_name), backend, quantize)
@@ -333,92 +357,382 @@ def check_model_downloaded(model_name: str, backend: str, quantize: bool) -> boo
     return False
 
 
+def inspect_dependency(dep):
+    model_name = dep["modelName"]
+    backend = dep.get("backend", "")
+    quantize = bool(dep.get("quantize", False))
+
+    resolved = resolve_model_id(model_name)
+    candidates = [resolved]
+    if model_name != resolved:
+        candidates.append(model_name)
+
+    existing_model_dir = ""
+    for candidate in candidates:
+        model_dir = get_model_cache_path(candidate)
+        if os.path.isdir(model_dir):
+            existing_model_dir = model_dir
+            break
+
+    cached = bool(existing_model_dir)
+    missing_files = []
+    complete = False
+    issue = ""
+    if not cached:
+        issue = "模型未下载"
+    else:
+        if backend.startswith("funasr_onnx"):
+            missing_files = get_missing_onnx_files(existing_model_dir, backend, quantize)
+            if missing_files:
+                issue = f"缺失文件: {', '.join(missing_files)}"
+            else:
+                complete = True
+        else:
+            complete = True
+
+    return {
+        "role": dep.get("role", "Model"),
+        "modelName": model_name,
+        "backend": backend,
+        "quantize": quantize,
+        "cached": cached,
+        "complete": complete,
+        "missingFiles": missing_files,
+        "issue": issue,
+    }
+
+
+def check_dependencies_downloaded(dependencies) -> bool:
+    for dep in dependencies:
+        if not is_dependency_downloaded(dep):
+            return False
+    return True
+
+
+def create_asr_model(model_name: str, backend: str, quantize: bool):
+    if backend == "funasr_onnx_contextual":
+        try:
+            from funasr_onnx import ContextualParaformer
+        except ImportError as e:
+            raise RuntimeError("缺少 funasr_onnx 依赖，请安装 requirements.txt 后重试") from e
+
+        model_dir = resolve_model_dir(model_name)
+        model_dir, effective_quantize = adapt_contextual_quant_model_dir(
+            model_dir, bool(quantize)
+        )
+        model = ContextualParaformer(
+            model_dir=model_dir,
+            quantize=effective_quantize,
+            device_id="-1",
+            intra_op_num_threads=4,
+        )
+        if not hasattr(model, "language"):
+            model.language = "zh-cn"
+        return model
+
+    if backend == "funasr_onnx_paraformer":
+        try:
+            from funasr_onnx import Paraformer
+        except ImportError as e:
+            raise RuntimeError("缺少 funasr_onnx 依赖，请安装 requirements.txt 后重试") from e
+        return Paraformer(
+            model_dir=resolve_model_dir(model_name),
+            quantize=bool(quantize),
+            device_id="-1",
+            intra_op_num_threads=4,
+        )
+
+    from funasr import AutoModel
+
+    model_ref = resolve_model_dir(model_name)
+    return AutoModel(
+        model=model_ref,
+        device="cpu",
+        disable_update=True,
+    )
+
+
+def create_vad_model(model_name: str, backend: str, quantize: bool):
+    if not model_name:
+        return None
+    if backend == "funasr_onnx_vad":
+        try:
+            from funasr_onnx import Fsmn_vad
+        except ImportError as e:
+            raise RuntimeError("缺少 funasr_onnx 依赖，请安装 requirements.txt 后重试") from e
+        return Fsmn_vad(
+            model_dir=resolve_model_dir(model_name),
+            quantize=bool(quantize),
+            device_id="-1",
+            intra_op_num_threads=2,
+        )
+
+    raise RuntimeError(f"不支持的 VAD backend: {backend}")
+
+
+def create_punc_model(model_name: str, backend: str):
+    if not model_name:
+        return None
+    if backend == "funasr_torch_punc":
+        # PyInstaller 场景下，CharTokenizer 可能不会被自动收集，导致 tables.tokenizer_classes 缺项。
+        # 显式导入可确保注册逻辑执行并纳入打包。
+        import funasr.tokenizer.char_tokenizer  # noqa: F401
+        # PUNC 使用 CTTransformer；显式导入触发 register.table 注册。
+        import funasr.models.ct_transformer.model  # noqa: F401
+        from funasr import AutoModel
+
+        model_ref = resolve_model_dir(model_name)
+        return AutoModel(
+            model=model_ref,
+            device="cpu",
+            disable_update=True,
+        )
+
+    raise RuntimeError(f"不支持的 PUNC backend: {backend}")
+
+
+def _extract_vad_pairs(node, pairs):
+    if isinstance(node, (list, tuple)):
+        if (
+            len(node) == 2
+            and isinstance(node[0], (int, float))
+            and isinstance(node[1], (int, float))
+        ):
+            pairs.append((float(node[0]), float(node[1])))
+            return
+        for item in node:
+            _extract_vad_pairs(item, pairs)
+
+
+def split_segments_by_vad(samples: np.ndarray):
+    if vad_model is None:
+        return [samples]
+    try:
+        vad_output = vad_model(samples)
+    except Exception as e:
+        sys.stderr.write(f"VAD 推理失败，回退整段识别: {e}\n")
+        sys.stderr.flush()
+        return [samples]
+
+    pairs = []
+    _extract_vad_pairs(vad_output, pairs)
+    if not pairs:
+        return [samples]
+
+    # 去重 + 按起点排序，避免同一段重复切分导致重复识别。
+    deduped = []
+    seen = set()
+    for start_ms, end_ms in pairs:
+        key = (int(round(float(start_ms))), int(round(float(end_ms))))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((float(start_ms), float(end_ms)))
+    deduped.sort(key=lambda item: (item[0], item[1]))
+
+    segmented = []
+    total = len(samples)
+    for start_ms, end_ms in deduped:
+        start = max(0, int(start_ms * 16))
+        end = min(total, int(end_ms * 16))
+        if end <= start:
+            continue
+        if end - start < 320:
+            continue
+        segmented.append(samples[start:end])
+
+    return segmented or [samples]
+
+
+def run_asr_once(samples: np.ndarray) -> str:
+    if asr_model is None:
+        return ""
+
+    if asr_backend == "funasr_onnx_contextual":
+        hotwords = normalize_hotwords_for_onnx(asr_hotwords_str)
+        result = asr_model(samples, hotwords=hotwords)
+    elif asr_backend == "funasr_onnx_paraformer":
+        result = asr_model(samples)
+    else:
+        gen_kwargs = dict(input=samples)
+        if asr_hotwords_str:
+            gen_kwargs["hotword"] = asr_hotwords_str
+        result = asr_model.generate(**gen_kwargs)
+
+    text = ""
+    if result and len(result) > 0:
+        item = result[0]
+        if hasattr(item, "text"):
+            text = normalize_result_text(item.text)
+        else:
+            text = normalize_result_text(item)
+    return text
+
+
+def run_punc(text: str) -> str:
+    if not text or not text.strip():
+        return ""
+    if punc_model is None:
+        return text
+    try:
+        result = punc_model.generate(input=text)
+        if result and len(result) > 0:
+            normalized = normalize_result_text(result[0])
+            if normalized:
+                return normalized
+    except Exception as e:
+        sys.stderr.write(f"PUNC 推理失败，回退原文: {e}\n")
+        sys.stderr.flush()
+    return text
+
+
 def handle_message(msg: dict) -> dict:
-    """处理单条请求，返回响应"""
-    global model
+    global asr_model, vad_model, punc_model, asr_backend, asr_hotwords_str
+
     cmd = msg.get("cmd")
     msg_id = msg.get("id", 0)
 
     if cmd == "init":
-        # 释放旧实例
-        model = None
+        reset_runtime_models()
         cleanup_tmp_files()
+
         model_name = msg["modelName"]
         backend = msg.get("backend", "funasr_torch")
         quantize = bool(msg.get("quantize", False))
         hotwords = msg.get("hotwords", "")
+        vad_model_name = msg.get("vadModelName", "")
+        vad_backend = msg.get("vadBackend", "funasr_onnx_vad")
+        vad_quantize = bool(msg.get("vadQuantize", True))
+        punc_model_name = msg.get("puncModelName", "")
+        punc_backend = msg.get("puncBackend", "funasr_torch_punc")
 
-        # 先预下载模型（带进度上报）
+        dependencies = build_dependencies(
+            model_name,
+            backend,
+            quantize,
+            vad_model_name,
+            vad_backend,
+            vad_quantize,
+            punc_model_name,
+            punc_backend,
+        )
+
         send_json({"id": msg_id, "progress": 0, "status": "检查模型..."})
-        download_model_with_progress(model_name, msg_id, backend, quantize)
+        download_model_with_progress(dependencies, msg_id)
 
-        # 写热词临时文件
         hotword_file = write_hotwords_tmp(hotwords)
 
-        # 加载模型
-        send_json({"id": msg_id, "progress": 95, "status": "加载模型..."})
-        model = create_model(model_name, hotwords, backend, quantize)
-        model._backend = backend
-        model._quantize = quantize
-        model._hotwords_str = hotwords
-        model._hotword_file = hotword_file
+        send_json({"id": msg_id, "progress": 92, "status": "加载 ASR 模型..."})
+        sys.stderr.write("[DEBUG] init: before create_asr_model\n")
+        sys.stderr.flush()
+        asr_model = create_asr_model(model_name, backend, quantize)
+        sys.stderr.write("[DEBUG] init: after create_asr_model\n")
+        sys.stderr.flush()
+        asr_backend = backend
+        asr_hotwords_str = hotwords
+
+        send_json({"id": msg_id, "progress": 96, "status": "加载 VAD 模型..."})
+        sys.stderr.write("[DEBUG] init: before create_vad_model\n")
+        sys.stderr.flush()
+        vad_model = create_vad_model(vad_model_name, vad_backend, vad_quantize)
+        sys.stderr.write("[DEBUG] init: after create_vad_model\n")
+        sys.stderr.flush()
+
+        send_json({"id": msg_id, "progress": 98, "status": "加载 PUNC 模型..."})
+        sys.stderr.write("[DEBUG] init: before create_punc_model\n")
+        sys.stderr.flush()
+        punc_model = create_punc_model(punc_model_name, punc_backend)
+        sys.stderr.write("[DEBUG] init: after create_punc_model\n")
+        sys.stderr.flush()
+
+        _ = hotword_file
+        sys.stderr.write("[DEBUG] init: return ok\n")
+        sys.stderr.flush()
         return {"id": msg_id, "ok": True}
 
-    elif cmd == "recognize":
-        if model is None:
+    if cmd == "recognize":
+        if asr_model is None:
             return {"id": msg_id, "ok": False, "error": "识别器未初始化"}
 
         wav_bytes = base64.b64decode(msg["wavBase64"])
         samples = decode_wav(wav_bytes)
 
-        backend = getattr(model, "_backend", "funasr_torch")
-        hotwords_str = getattr(model, "_hotwords_str", "")
-        if backend == "funasr_onnx_contextual":
-            hotwords = normalize_hotwords_for_onnx(hotwords_str)
-            result = model(samples, hotwords=hotwords)
-        elif backend == "funasr_onnx_paraformer":
-            result = model(samples)
+        segments = split_segments_by_vad(samples)
+        # 避免“分段分别识别后拼接”带来的边界词重复：
+        # VAD 仅用于裁剪无声片段，ASR 统一单次解码。
+        merged = None
+        if len(segments) <= 1:
+            merged = segments[0] if segments else samples
         else:
-            gen_kwargs = dict(input=samples)
-            if hotwords_str:
-                gen_kwargs["hotword"] = hotwords_str
-            result = model.generate(**gen_kwargs)
-
-        text = ""
-        if result and len(result) > 0:
-            item = result[0]
-            if hasattr(item, "text"):
-                text = normalize_result_text(item.text)
+            valid_segments = [seg for seg in segments if isinstance(seg, np.ndarray) and seg.size > 0]
+            if valid_segments:
+                merged = np.concatenate(valid_segments)
             else:
-                text = normalize_result_text(item)
+                merged = samples
 
-        return {"id": msg_id, "ok": True, "text": text}
+        raw_text = run_asr_once(merged).strip()
+        text = run_punc(raw_text)
 
-    elif cmd == "check":
+        return {
+            "id": msg_id,
+            "ok": True,
+            "text": text,
+            "rawText": raw_text,
+            "segmentCount": len(segments),
+            "asrPasses": 1,
+        }
+
+    if cmd == "check":
         model_name = msg["modelName"]
         backend = msg.get("backend", "funasr_torch")
         quantize = bool(msg.get("quantize", False))
-        downloaded = check_model_downloaded(model_name, backend, quantize)
-        return {"id": msg_id, "ok": True, "downloaded": downloaded}
+        vad_model_name = msg.get("vadModelName", "")
+        vad_backend = msg.get("vadBackend", "funasr_onnx_vad")
+        vad_quantize = bool(msg.get("vadQuantize", True))
+        punc_model_name = msg.get("puncModelName", "")
+        punc_backend = msg.get("puncBackend", "funasr_torch_punc")
 
-    elif cmd == "dispose":
-        model = None
+        dependencies = build_dependencies(
+            model_name,
+            backend,
+            quantize,
+            vad_model_name,
+            vad_backend,
+            vad_quantize,
+            punc_model_name,
+            punc_backend,
+        )
+        dependency_status = [inspect_dependency(dep) for dep in dependencies]
+        downloaded = all(item.get("complete") for item in dependency_status)
+        asr_cached = any(
+            item.get("role") == "ASR" and item.get("cached")
+            for item in dependency_status
+        )
+        # 仅在“ASR 主模型已缓存但整体未就绪”时标记为不完整，
+        # 避免 VAD/PUNC 共享缓存导致未下载模型被误报。
+        incomplete = asr_cached and not downloaded
+        return {
+            "id": msg_id,
+            "ok": True,
+            "downloaded": downloaded,
+            "incomplete": incomplete,
+            "dependencies": dependency_status,
+        }
+
+    if cmd == "dispose":
+        reset_runtime_models()
         cleanup_tmp_files()
         return {"id": msg_id, "ok": True}
 
-    elif cmd == "ping":
+    if cmd == "ping":
         return {"id": msg_id, "ok": True}
 
-    else:
-        return {"id": msg_id, "ok": False, "error": f"未知命令: {cmd}"}
+    return {"id": msg_id, "ok": False, "error": f"未知命令: {cmd}"}
 
 
 def main():
-    """主循环：逐行读取 stdin JSON，处理后写入 stdout"""
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
-
-    # 启动就绪信号
     send_json({"ready": True})
 
     for line in sys.stdin:
@@ -429,9 +743,15 @@ def main():
             msg = json.loads(line)
             resp = handle_message(msg)
         except Exception as e:
-            traceback.print_exc(file=sys.stderr)
-            resp = {"id": msg.get("id", 0) if isinstance(msg, dict) else 0,
-                    "ok": False, "error": str(e)}
+            tb = traceback.format_exc()
+            sys.stderr.write(tb)
+            sys.stderr.flush()
+            resp = {
+                "id": msg.get("id", 0) if isinstance(msg, dict) else 0,
+                "ok": False,
+                "error": f"sidecar 内部异常: {type(e).__name__}: {e}",
+                "details": tb,
+            }
         send_json(resp)
 
 
