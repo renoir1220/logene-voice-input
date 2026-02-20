@@ -67,3 +67,7 @@ export const logger = {
 export function getLogBuffer(): LogEntry[] {
   return [...buffer]
 }
+
+export function clearLogs() {
+  buffer.length = 0
+}

@@ -97,7 +97,7 @@ async function sendShortcutLinux(shortcut: string): Promise<void> {
 }
 
 // 粘贴剪贴板内容
-async function pasteClipboard(): Promise<void> {
+export async function pasteClipboard(): Promise<void> {
   if (process.platform === 'darwin') {
     await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using {command down}'`)
   } else if (process.platform === 'win32') {
@@ -111,4 +111,36 @@ async function pasteClipboard(): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// 提取当前前台应用中鼠标选中的文本
+export async function copySelectedText(): Promise<string> {
+  // 增加延时以确保用户触发功能的热键（如 Alt+W）物理按键已松开
+  // 否则在 Mac 上混合了修饰键会被识别为 Option+Command+C (拷贝样式) 导致普通文本提取失败
+  await sleep(300)
+
+  const oldText = clipboard.readText()
+  // 清空剪贴板确保本次获取的是最新鲜的
+  clipboard.clear()
+
+  if (process.platform === 'darwin') {
+    await execAsync(`osascript -e 'tell application "System Events" to keystroke "c" using {command down}'`)
+  } else if (process.platform === 'win32') {
+    await execAsync(
+      `powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^c')"`
+    )
+  } else {
+    await execAsync('xdotool key ctrl+c')
+  }
+
+  // 等待系统剪贴板通道写入
+  await sleep(200)
+  const newText = clipboard.readText()
+
+  // 恢复用户的剪贴板记录以免弄脏他的历史
+  if (oldText) {
+    clipboard.writeText(oldText)
+  }
+
+  return newText
 }

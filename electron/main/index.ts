@@ -1,33 +1,180 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Tray,
   Menu,
   nativeImage,
   globalShortcut,
   screen,
+  shell,
+  systemPreferences,
 } from 'electron'
 import * as path from 'path'
+import { exec } from 'child_process'
+import { promisify } from 'util'
 import { uIOhook, UiohookKey } from 'uiohook-napi'
 import { getConfig, saveConfig, AppConfig } from './config'
 import { recognize } from './asr'
-import { recognizeLocal, initLocalRecognizer, disposeLocalRecognizer } from './local-asr'
-import { getModelStatuses, downloadModel, deleteModel, isModelDownloaded } from './model-manager'
-import { initLogger, logger, getLogBuffer } from './logger'
+import { recognizeLocal, initLocalRecognizer, disposeLocalRecognizer, checkModelDownloaded } from './local-asr'
+import { getModelInfoList } from './model-manager'
+import { initLogger, logger, getLogBuffer, clearLogs } from './logger'
 import { matchVoiceCommand } from './voice-commands'
 import { typeText, sendShortcut } from './input-sim'
-import { getFrontmostApp, restoreFocus } from './focus'
+import { FocusController } from './focus-controller'
+import { normalizeAsrText } from './asr-text'
+import { isSelfAppId } from './self-app'
+import { initRewriteWindow, triggerRewrite } from './rewrite-window'
 
+const execAsync = promisify(exec)
 let mainWindow: BrowserWindow | null = null
+let dashboardWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 // VAD 是否启用（运行时状态，与配置同步）
 let vadEnabled = false
+let asrRequestSeq = 0
+let permissionWarned = false
+let permissionCheckInFlight = false
+let hotkeysRegistered = false
+let lastPermissionCheckAt = 0
 // 记录悬浮球当前物理坐标（确保收起时回到原位）
 let floatPos = { x: 0, y: 0 }
 const FLOAT_WIDTH = 116
 const FLOAT_HEIGHT = 46
 const VAD_TOGGLE_HOTKEY = 'Alt+Shift+V'
+const PERMISSION_CHECK_INTERVAL_MS = 30_000
+
+interface PermissionIssue {
+  id: 'microphone' | 'accessibility' | 'automation'
+  title: string
+  guide: string
+}
+
+async function canControlSystemEvents(): Promise<boolean> {
+  if (process.platform !== 'darwin') return true
+  try {
+    await execAsync(
+      `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`,
+      { timeout: 1500 },
+    )
+    return true
+  } catch (err: unknown) {
+    const msg = String((err as { stderr?: string; message?: string })?.stderr || (err as { message?: string })?.message || '')
+    logger.warn(`[Permission] 无法控制 System Events: ${msg || 'unknown'}`)
+    return false
+  }
+}
+
+function emitPermissionWarning(message: string) {
+  logger.warn(`[Permission] ${message}`)
+  mainWindow?.webContents.send('permission-warning', message)
+  dashboardWindow?.webContents.send('permission-warning', message)
+}
+
+function formatPermissionGuide(reason: string, issues: PermissionIssue[]): string {
+  const lines = issues.map((item) => `${item.title}：${item.guide}`)
+  return `权限检查(${reason})发现缺失：${lines.join(' ')} 授权后请重启应用。`
+}
+
+async function openPermissionSettings(issues: PermissionIssue[]): Promise<void> {
+  const targets = new Set<string>()
+  if (process.platform === 'darwin') {
+    for (const issue of issues) {
+      if (issue.id === 'microphone') targets.add('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')
+      if (issue.id === 'accessibility') targets.add('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility')
+      if (issue.id === 'automation') targets.add('x-apple.systempreferences:com.apple.preference.security?Privacy_Automation')
+    }
+  } else if (process.platform === 'win32') {
+    for (const issue of issues) {
+      if (issue.id === 'microphone') targets.add('ms-settings:privacy-microphone')
+    }
+  }
+  for (const target of targets) {
+    try {
+      await shell.openExternal(target)
+    } catch (e) {
+      logger.warn(`[Permission] 打开系统设置失败: ${target} ${String(e)}`)
+    }
+  }
+}
+
+async function collectPermissionIssues(): Promise<PermissionIssue[]> {
+  const issues: PermissionIssue[] = []
+  if (process.platform !== 'darwin' && process.platform !== 'win32') return issues
+  const micStatus = systemPreferences.getMediaAccessStatus('microphone')
+  if (micStatus === 'denied' || micStatus === 'restricted') {
+    issues.push({
+      id: 'microphone',
+      title: '麦克风',
+      guide: `当前状态为 ${micStatus}，请在系统隐私设置中允许本应用访问麦克风。`,
+    })
+  }
+  if (process.platform === 'darwin') {
+    if (!systemPreferences.isTrustedAccessibilityClient(false)) {
+      issues.push({
+        id: 'accessibility',
+        title: '辅助功能',
+        guide: '请在 系统设置 -> 隐私与安全性 -> 辅助功能 中允许本应用，以便发送快捷键与文本回填。',
+      })
+    }
+    const canControl = await canControlSystemEvents()
+    if (!canControl) {
+      issues.push({
+        id: 'automation',
+        title: '自动化(System Events)',
+        guide: '请在 系统设置 -> 隐私与安全性 -> 自动化 中允许本应用控制 System Events，以便识别前台应用和恢复焦点。',
+      })
+    }
+  }
+  return issues
+}
+
+async function checkPermissionsAndGuide(reason: string, forcePrompt = false): Promise<boolean> {
+  if (process.platform !== 'darwin' && process.platform !== 'win32') return true
+  const now = Date.now()
+  if (permissionCheckInFlight) return true
+  if (!forcePrompt && now - lastPermissionCheckAt < PERMISSION_CHECK_INTERVAL_MS) return true
+  permissionCheckInFlight = true
+  lastPermissionCheckAt = now
+  try {
+    const issues = await collectPermissionIssues()
+    if (issues.length === 0) {
+      permissionWarned = false
+      logger.info(`[Permission] 权限检查通过 (${reason})`)
+      return true
+    }
+    const message = formatPermissionGuide(reason, issues)
+    if (!permissionWarned || forcePrompt) {
+      emitPermissionWarning(message)
+      permissionWarned = true
+      if (mainWindow) {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          title: '需要系统权限',
+          message: '检测到权限未开启，相关功能暂不可用',
+          detail: message,
+          buttons: ['打开系统权限设置', '稍后处理'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        })
+        if (result.response === 0) {
+          await openPermissionSettings(issues)
+        }
+      }
+    } else {
+      logger.warn(`[Permission] (${reason}) 仍有权限缺失: ${message}`)
+    }
+    return false
+  } finally {
+    permissionCheckInFlight = false
+  }
+}
+
+const focusController = new FocusController({
+  isSelfAppId: (appId) => isSelfAppId(appId, process.platform, app),
+})
 
 function setVadEnabledState(enabled: boolean, emitToRenderer = false): boolean {
   if (vadEnabled === enabled && !emitToRenderer) return vadEnabled
@@ -55,12 +202,15 @@ function createWindow() {
   floatPos = { x: sw - FLOAT_WIDTH - 40, y: sh - FLOAT_HEIGHT - 40 }
 
   mainWindow = new BrowserWindow({
+    type: process.platform === 'darwin' ? 'panel' : 'toolbar', // 关键！Mac上的 panel 或 win 上的 toolbar 才能真正在系统级避免抢走编辑器的焦点
     width: FLOAT_WIDTH,
     height: FLOAT_HEIGHT,
     x: floatPos.x,
     y: floatPos.y,
     frame: false,
     transparent: true,
+    show: false,
+    focusable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
@@ -77,8 +227,34 @@ function createWindow() {
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'))
+    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+
+  // 关键：让悬浮球点击时不夺走系统焦点，保持用户原有文本框/选区不被打断。
+  // 结合上方的 type: 'panel'，此时 macOS 上点击浮窗按钮已可避免 Input/Textarea 脱焦。
+  mainWindow.setFocusable(false)
+  mainWindow.setAlwaysOnTop(true, 'floating', 1)
+  mainWindow.once('ready-to-show', () => {
+    logger.info('[Window] ready-to-show')
+    mainWindow?.showInactive()
+    updateTrayMenu()
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    logger.info('[Window] did-finish-load')
+  })
+  mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
+    logger.error(`[Window] did-fail-load code=${code} desc=${desc} url=${url}`)
+  })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    logger.error(`[Window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      logger.warn('[Window] ready-to-show timeout, fallback showInactive')
+      mainWindow.showInactive()
+      updateTrayMenu()
+    }
+  }, 1800)
 
   mainWindow.on('closed', () => { mainWindow = null })
 }
@@ -99,7 +275,7 @@ function updateTrayMenu() {
       label: mainWindow?.isVisible() ? '隐藏窗口' : '显示窗口',
       click: () => {
         if (mainWindow?.isVisible()) mainWindow.hide()
-        else mainWindow?.show()
+        else mainWindow?.showInactive()
         updateTrayMenu()
       },
     },
@@ -107,6 +283,12 @@ function updateTrayMenu() {
       label: vadEnabled ? '关闭 VAD 智能模式' : '开启 VAD 智能模式',
       click: () => {
         setVadEnabledState(!vadEnabled, true)
+      },
+    },
+    {
+      label: '检查权限并引导',
+      click: () => {
+        void checkPermissionsAndGuide('tray-manual-check', true)
       },
     },
     { type: 'separator' },
@@ -174,6 +356,7 @@ function nameToKeycode(name: string): number {
 // ── 全局热键（按住录音，松开识别）──
 
 function registerHotkey() {
+  if (hotkeysRegistered) return
   const config = getConfig()
   const parsed = parseHotkey(config.hotkey.record)
 
@@ -184,7 +367,6 @@ function registerHotkey() {
 
   let isRecording = false
   let prevApp: string | null = null
-
   // 按下热键 → 开始录音
   uIOhook.on('keydown', async (e) => {
     if (isRecording) return
@@ -195,7 +377,7 @@ function registerHotkey() {
     if (e.metaKey !== parsed.meta) return
 
     isRecording = true
-    prevApp = await getFrontmostApp()
+    prevApp = await focusController.captureSnapshot('hotkey-keydown')
     console.log('[热键] 按下，开始录音，前台应用:', prevApp)
     mainWindow?.webContents.send('hotkey-state', 'recording')
   })
@@ -210,14 +392,19 @@ function registerHotkey() {
     mainWindow?.webContents.send('hotkey-stop-recording', prevApp)
   })
 
-  uIOhook.start()
+  try {
+    uIOhook.start()
+    logger.info('[热键] uiohook 已启用（按住说话，松开识别）')
+  } catch (e) {
+    throw new Error(`[热键] uiohook 启动失败: ${String(e)}`)
+  }
 
   // 注册全局快捷键，拦截系统冒泡，避免如 Alt+Space 在长按期间一直给焦点应用输入空格
   const registered = globalShortcut.register(config.hotkey.record, async () => {
-    // 这仅用于消费和拦截按键，如果不小心 uiohook 没拿到 keydown 也可以在此处补偿
+    // 仅用于消费和拦截按键，如果 uiohook 丢事件则在此补偿。
     if (!isRecording) {
       isRecording = true
-      prevApp = await getFrontmostApp()
+      prevApp = await focusController.captureSnapshot('hotkey-shortcut-fallback')
       console.log('[热键/拦截网] 捕获按下，开始录音，前台应用:', prevApp)
       mainWindow?.webContents.send('hotkey-state', 'recording')
     }
@@ -238,6 +425,18 @@ function registerHotkey() {
   } else {
     console.error('[VAD] 切换快捷键注册失败:', VAD_TOGGLE_HOTKEY)
   }
+
+  // 划词重写功能热键
+  const rewriteRegistered = globalShortcut.register('Alt+W', () => {
+    logger.info('[Rewrite] 热键 Alt+W 触发')
+    triggerRewrite()
+  })
+  if (rewriteRegistered) {
+    console.log('[Rewrite] 已注册快捷键: Alt+W')
+  } else {
+    console.error('[Rewrite] 快捷键注册失败: Alt+W')
+  }
+  hotkeysRegistered = true
 }
 
 // ── IPC 处理 ──
@@ -247,6 +446,23 @@ function setupIpc() {
   vadEnabled = Boolean(config.vad?.enabled)
 
   ipcMain.handle('get-config', () => getConfig())
+  ipcMain.handle('get-frontmost-app', async () => {
+    const snapshot = await focusController.captureSnapshot('ipc-get-frontmost')
+    logger.info(`[IPC] get-frontmost-app -> ${snapshot ?? 'null'}`)
+    return snapshot
+  })
+  ipcMain.handle('capture-focus-snapshot', async (_event, reason: string | undefined) => {
+    const snapshot = await focusController.captureSnapshot(reason ? `ipc-capture:${reason}` : 'ipc-capture')
+    logger.info(`[IPC] capture-focus-snapshot reason=${reason ?? 'unknown'} -> ${snapshot ?? 'null'}`)
+    return snapshot
+  })
+  ipcMain.handle('restore-focus', async (_event, appId: string | null) => {
+    logger.info(`[IPC] restore-focus request=${appId ?? 'null'}`)
+    await focusController.restore(appId, 'ipc-restore')
+  })
+  ipcMain.handle('debug-log', (_event, msg: string) => {
+    logger.info(msg)
+  })
 
   ipcMain.handle('save-config', (_event, cfg: AppConfig) => {
     const current = getConfig()
@@ -261,6 +477,7 @@ function setupIpc() {
       voiceCommands: cfg.voiceCommands ?? current.voiceCommands,
       hotwords: cfg.hotwords ?? current.hotwords,
       asr: { ...current.asr, ...cfg.asr },
+      llm: cfg.llm ? { ...current.llm, ...cfg.llm } : current.llm,
     }
     saveConfig(merged)
     updateTrayMenu()
@@ -272,99 +489,121 @@ function setupIpc() {
     return setVadEnabledState(Boolean(enabled))
   })
 
+  // 独立的 Dashboard 设置窗体控制
+  ipcMain.handle('open-dashboard', () => {
+    if (dashboardWindow) {
+      if (dashboardWindow.isMinimized()) dashboardWindow.restore()
+      dashboardWindow.show()
+      dashboardWindow.focus()
+      return
+    }
+
+    dashboardWindow = new BrowserWindow({
+      width: 800,
+      height: 600,
+      title: 'Logene Voice Input - 控制台',
+      webPreferences: {
+        preload: path.join(__dirname, '../preload/index.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+
+    if (process.env.ELECTRON_RENDERER_URL) {
+      dashboardWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}#/dashboard`)
+    } else {
+      dashboardWindow.loadFile(path.join(__dirname, '../renderer/index.html'), { hash: 'dashboard' })
+    }
+
+    dashboardWindow.on('closed', () => {
+      dashboardWindow = null
+    })
+  })
+
   // 渲染进程完成录音，发来 WAV ArrayBuffer，主进程负责 ASR + 输入
   ipcMain.handle('recognize-wav', async (_event, wavBuffer: ArrayBuffer, prevAppId: string | null) => {
+    const reqId = ++asrRequestSeq
     const cfg = getConfig()
     const buf = Buffer.from(wavBuffer)
     const asrMode = cfg.asr?.mode ?? 'api'
-    logger.info(`[ASR] 收到 WAV，大小 ${buf.byteLength} 字节，模式: ${asrMode}`)
+    logger.info(`[ASR#${reqId}] 收到 WAV，大小 ${buf.byteLength} 字节，模式: ${asrMode}`)
 
-    let text: string
+    let rawText: unknown
+    let localModelId = cfg.asr?.localModel ?? 'paraformer-zh-contextual-quant'
     try {
       if (asrMode === 'local') {
         // 本地模型识别
-        const modelId = cfg.asr?.localModel ?? 'paraformer-zh-small'
-        if (!isModelDownloaded(modelId)) {
-          throw new Error(`模型 ${modelId} 尚未下载，请先在设置中下载`)
-        }
-        await initLocalRecognizer(modelId)
-        text = await recognizeLocal(buf)
+        await initLocalRecognizer(localModelId)
+        rawText = await recognizeLocal(buf)
       } else {
         // 远程 API 识别
-        text = await recognize(cfg.server.url, cfg.server.asrConfigId, buf)
+        rawText = await recognize(cfg.server.url, cfg.server.asrConfigId, buf)
       }
     } catch (e) {
-      logger.error(`[ASR] 识别失败: ${e}`)
+      logger.error(`[ASR#${reqId}] 识别失败: ${e}`)
       throw e
     }
 
-    logger.info(`[ASR] 识别结果: "${text}"`)
+    const text = normalizeAsrText(rawText)
+    logger.info(`[ASR#${reqId}] 识别结果: "${text}"`)
     if (!text.trim()) return ''
 
     const result = matchVoiceCommand(text, cfg.voiceCommands)
-    await restoreFocus(prevAppId)
+    const fallbackTarget = focusController.getLastExternalAppId()
+    const focusTarget = prevAppId || fallbackTarget
+    logger.info(`[ASR#${reqId}] focus target prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'} chosen=${focusTarget ?? 'null'}`)
+    await focusController.restore(focusTarget, `asr#${reqId}`)
 
     if (result.type === 'command') {
-      logger.info(`[ASR] 语音指令: ${text.trim()} → ${result.shortcut}`)
+      logger.info(`[ASR#${reqId}] 语音指令: ${text.trim()} → ${result.shortcut}`)
       await sendShortcut(result.shortcut)
       return `${text.trim()} ⌨ ${result.shortcut}`
     } else {
-      logger.info(`[ASR] 输入文字: ${result.text}`)
+      logger.info(`[ASR#${reqId}] 输入文字: ${result.text}`)
       await typeText(result.text)
       return result.text
     }
   })
 
   // ── 模型管理 IPC ──
-  ipcMain.handle('get-model-statuses', () => getModelStatuses())
+  ipcMain.handle('get-model-statuses', async () => {
+    const models = getModelInfoList()
+    const results = []
+    for (const m of models) {
+      let downloaded = false
+      try {
+        downloaded = await checkModelDownloaded(m.id)
+      } catch { /* sidecar 未就绪，默认未下载 */ }
+      results.push({ ...m, downloaded })
+    }
+    return results
+  })
 
   ipcMain.handle('download-model', async (_event, modelId: string) => {
-    logger.info(`开始下载模型: ${modelId}`)
+    logger.info(`准备模型: ${modelId}`)
+    const sendProgress = (data: { progress: number; status?: string }) => {
+      const msg = { modelId, percent: data.progress, status: data.status }
+      mainWindow?.webContents.send('model-download-progress', msg)
+      dashboardWindow?.webContents.send('model-download-progress', msg)
+    }
+    sendProgress({ progress: 0, status: '启动中...' })
     try {
-      await downloadModel(modelId, (percent) => {
-        mainWindow?.webContents.send('model-download-progress', { modelId, percent })
-      })
+      await initLocalRecognizer(modelId, sendProgress)
       return { success: true }
     } catch (e) {
-      logger.error(`模型下载失败: ${e}`)
+      logger.error(`模型准备失败: ${e}`)
       return { success: false, error: String(e) }
     }
   })
 
-  ipcMain.handle('delete-model', (_event, modelId: string) => {
-    deleteModel(modelId)
-    // 如果删除的是当前使用的模型，释放识别器
-    const cfg = getConfig()
-    if (cfg.asr?.localModel === modelId) disposeLocalRecognizer()
+  ipcMain.handle('delete-model', (_event, _modelId: string) => {
+    // FunASR 模型由 ModelScope 缓存管理，不再手动删除
+    logger.info('FunASR 模型由 ModelScope 缓存管理，如需清理请手动删除 ~/.cache/modelscope')
   })
 
   // ── 日志 IPC ──
   ipcMain.handle('get-logs', () => getLogBuffer())
-
-  // 接收前端页面切换尺寸调用的 IPC
-  ipcMain.handle('switch-mode', (_event, mode: 'float' | 'dashboard') => {
-    if (!mainWindow) return
-    if (mode === 'float') {
-      mainWindow.setResizable(false)
-      mainWindow.setSize(FLOAT_WIDTH, FLOAT_HEIGHT, false)
-      mainWindow.setPosition(floatPos.x, floatPos.y, false)
-      mainWindow.setAlwaysOnTop(true)
-      mainWindow.setHasShadow(false)
-      mainWindow.setBackgroundColor('#00000000')
-    } else if (mode === 'dashboard') {
-      const [x, y] = mainWindow.getPosition()
-      if (mainWindow.getSize()[0] === FLOAT_WIDTH) {
-        floatPos = { x, y }
-      }
-      mainWindow.setSize(800, 600, false)
-      mainWindow.setResizable(true)
-      mainWindow.setAlwaysOnTop(false)
-      mainWindow.setHasShadow(true)
-      // 主面板恢复白色底以防 macOS 的亚克力特效异常并引发返回时的黑白底色残片
-      mainWindow.setBackgroundColor('#ffffff')
-      mainWindow.center()
-    }
-  })
+  ipcMain.handle('clear-logs', () => clearLogs())
 
   ipcMain.handle('get-window-position', () => mainWindow?.getPosition() || [0, 0])
   ipcMain.handle('set-window-position', (_event, x: number, y: number) => {
@@ -379,17 +618,37 @@ function setupIpc() {
 
 // ── 应用生命周期 ──
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // 初始化日志，推送到渲染进程
   initLogger((entry) => {
     mainWindow?.webContents.send('log-entry', entry)
   })
   logger.info('应用启动')
 
+  logger.info('[Startup] setupIpc')
   setupIpc()
+  logger.info('[Startup] initRewriteWindow')
+  initRewriteWindow()
+  logger.info('[Startup] createWindow')
   createWindow()
+  logger.info('[Startup] createTray')
   createTray()
-  registerHotkey()
+  logger.info('[Startup] startFocusTracker')
+  focusController.startTracking()
+  logger.info('[Startup] checkPermissions')
+  const permissionsReady = await checkPermissionsAndGuide('startup', true)
+  if (permissionsReady) {
+    logger.info('[Startup] registerHotkey')
+    try {
+      registerHotkey()
+    } catch (e) {
+      logger.error(String(e))
+      emitPermissionWarning(`热键初始化失败：${String(e)} 请确认系统权限已授权，然后重启应用。`)
+    }
+  } else {
+    logger.warn('[Startup] 权限未就绪，热键与焦点控制功能暂停。请授权后重启应用。')
+  }
+  logger.info('[Startup] ready')
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -402,6 +661,11 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   disposeLocalRecognizer()
-  uIOhook.stop()
+  focusController.stopTracking()
+  try {
+    uIOhook.stop()
+  } catch {
+    // ignore
+  }
   globalShortcut.unregisterAll()
 })

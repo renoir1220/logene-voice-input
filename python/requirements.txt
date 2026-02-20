@@ -1,0 +1,7 @@
+funasr
+funasr-onnx
+numpy
+onnxruntime
+torch
+torchaudio
+modelscope

@@ -5,36 +5,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 项目概述
 
 Logene Voice Input — 面向医疗取材软件的语音转文字 + 语音指令桌面客户端。
-技术栈：Tauri v2 + Rust 后端 + Vanilla TypeScript 前端（Vite 构建）。
+技术栈：Electron + Vanilla TypeScript 前端（electron-vite 构建）+ sherpa-onnx-node 本地 ASR。
 
 ## 开发命令
 
 ```bash
-npm install              # 安装前端依赖
-npm run tauri dev        # 开发模式（前端 + Rust 热重载）
-npm run tauri build      # 生产构建
+npm install              # 安装依赖
+npm run dev              # 开发模式（electron-vite dev）
+npm run build            # 生产构建
+npm test                 # 运行测试（vitest run）
 ```
-
-前端开发服务器固定端口 1420，HMR 端口 1421。
 
 ## 架构
 
-### Rust 后端 (src-tauri/src/)
+### 主进程 (electron/main/)
 
-- `lib.rs` — 应用入口，初始化 Tauri、注册全局热键（默认 Alt+Space）、管理 VAD 状态
-- `commands.rs` — Tauri 命令：录音控制、识别、配置读写、VAD 切换
-- `audio.rs` — cpal 音频采集，多声道转单声道，输出 16-bit WAV
-- `asr.rs` — 调用 Next.js ASR API（`/api/tasks/asr-recognize/sync`），POST multipart WAV
-- `vad.rs` — 基于 RMS 能量阈值的语音活动检测，状态机 Idle → Speaking → Processing
-- `voice_commands.rs` — 识别结果精确匹配预设关键词，触发对应快捷键
-- `input_sim.rs` — 两种输入方式：enigo 直接输入 / 剪贴板粘贴（Cmd/Ctrl+V）；支持组合键解析
-- `tray.rs` — 系统托盘菜单（显示/隐藏、VAD 切换、退出）
-- `config.rs` — TOML 配置管理，路径 `~/Library/Application Support/logene-voice-input/config.toml`
+- `index.ts` — 应用入口，窗口管理、IPC 处理、全局热键、系统托盘
+- `config.ts` — electron-store 配置管理（JSON 格式）
+- `asr.ts` — 远程 API 识别（POST multipart WAV）
+- `local-asr.ts` — 本地 sherpa-onnx 离线识别（Paraformer/SenseVoice）
+- `model-manager.ts` — 模型定义、下载（hf-mirror.com 国内镜像）、状态管理
+- `logger.ts` — 结构化日志，写文件 + 推送渲染进程
+- `voice-commands.ts` — 语音指令匹配，触发快捷键
+- `input-sim.ts` — 文字输入 / 剪贴板粘贴 / 组合键模拟
+- `focus.ts` — AppleScript 前台应用记录与还原
 
 ### 前端 (src/)
 
-- `main.ts` — UI 逻辑，三种状态（idle/recording/recognizing），监听 Tauri 事件
-- `styles.css` — 无边框透明浮窗样式
+- `main.ts` — UI 逻辑，浮窗/面板双模式，配置管理，模型管理，日志查看
+- `styles.css` — 样式
 
 ### 关键设计
 
@@ -48,3 +47,4 @@ npm run tauri build      # 生产构建
 - 代码注释使用中文
 - Rust 代码遵循标准 Cargo 格式化（`cargo fmt`）
 - 前端无框架，直接操作 DOM
+- 所有外部资源下载链接必须提供国内镜像（如 hf-mirror.com），不依赖 GitHub/HuggingFace 直连

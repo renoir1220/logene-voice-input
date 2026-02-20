@@ -6,22 +6,35 @@ declare global {
     electronAPI: {
       getConfig: () => Promise<AppConfig>
       saveConfig: (config: AppConfig) => Promise<void>
+      getFrontmostApp: () => Promise<string | null>
+      captureFocusSnapshot: (reason?: string) => Promise<string | null>
+      restoreFocus: (appId: string | null) => Promise<void>
       getVadEnabled: () => Promise<boolean>
       setVadEnabled: (enabled: boolean) => Promise<boolean>
+      debugLog: (msg: string) => Promise<void>
       recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) => Promise<string>
-      switchMode: (mode: 'float' | 'dashboard') => Promise<void>
+      openDashboard: () => Promise<void>
       getWindowPosition: () => Promise<[number, number]>
       setWindowPosition: (x: number, y: number) => Promise<void>
       getModelStatuses: () => Promise<ModelStatus[]>
       downloadModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
       deleteModel: (modelId: string) => Promise<void>
       getLogs: () => Promise<LogEntry[]>
+      clearLogs: () => Promise<void>
       onHotkeyState: (cb: (state: string) => void) => void
       onHotkeyResult: (cb: (result: string) => void) => void
       onToggleVad: (cb: (enabled: boolean) => void) => void
       onHotkeyStopRecording: (cb: (prevAppId: string | null) => void) => void
-      onModelDownloadProgress: (cb: (data: { modelId: string; percent: number }) => void) => void
+      onModelDownloadProgress: (cb: (data: { modelId: string; percent: number; status?: string }) => void) => void
       onLogEntry: (cb: (entry: LogEntry) => void) => void
+      onPermissionWarning: (cb: (message: string) => void) => void
+
+      // 重写专用通道
+      closeRewrite: () => Promise<void>
+      executeRewrite: (text: string, instruction: string) => Promise<string>
+      replaceText: (newText: string) => Promise<void>
+      onInitRewrite: (cb: (text: string) => void) => void
+      onRewriteChunk: (cb: (chunk: string) => void) => void
     }
   }
 }
@@ -34,7 +47,6 @@ interface HotwordScene {
 interface ModelStatus {
   id: string
   name: string
-  type: string
   description: string
   size: string
   downloaded: boolean
@@ -55,6 +67,7 @@ interface AppConfig {
   voiceCommands: Record<string, string>
   hotwords: HotwordScene[]
   asr: { mode: 'api' | 'local'; localModel: string }
+  llm: { enabled: boolean; baseUrl: string; apiKey: string; model: string }
 }
 
 type RecordState = 'idle' | 'recording' | 'recognizing' | 'success'
@@ -80,6 +93,35 @@ let pcmSamples: Float32Array[] = []
 let isCapturing = false
 // 追踪 startCapture 的 Promise，防止 stopCapture 在它完成前被调用
 let startCapturePromise: Promise<void> | null = null
+// 单一焦点快照：录音开始时记录原前台应用，用于识别后恢复光标焦点
+let focusSnapshotAppId: string | null = null
+let uiTraceSeq = 0
+
+function uiTrace(event: string, extra: Record<string, unknown> = {}) {
+  uiTraceSeq += 1
+  const payload = {
+    seq: uiTraceSeq,
+    state,
+    focusSnapshotAppId,
+    vadEnabled: vadState.enabled,
+    ...extra,
+  }
+  const details = JSON.stringify(payload)
+  window.electronAPI.debugLog(`[UI] ${event} ${details}`).catch(() => { /* ignore */ })
+}
+
+async function captureFocusSnapshot(reason: string): Promise<string | null> {
+  try {
+    const appId = await window.electronAPI.captureFocusSnapshot(reason)
+    focusSnapshotAppId = appId
+    uiTrace('focus.snapshot', { reason, appId })
+    return appId
+  } catch (e) {
+    focusSnapshotAppId = null
+    uiTrace('focus.snapshot.error', { reason, error: String(e) })
+    return null
+  }
+}
 
 // 初始化麦克风
 async function initMic(): Promise<void> {
@@ -140,6 +182,9 @@ let vadSilenceStart = 0
 let vadIsSpeaking = false
 let vadIsProcessing = false
 let vadCapturePromise: Promise<void> | null = null
+let vadSyncVersion = 0
+// VAD 自动识别时记录原前台应用，用于识别后恢复光标焦点
+let vadPrevAppId: string | null = null
 
 async function startVad(): Promise<void> {
   if (!vadState.enabled || vadIsProcessing || vadTimer) return
@@ -170,10 +215,14 @@ async function startVad(): Promise<void> {
         vadIsSpeaking = true
         vadSpeakingStart = now
         vadSilenceStart = now
+        void captureFocusSnapshot('vad-speech-start')
+          .then((appId) => { if (vadIsSpeaking) vadPrevAppId = appId })
+          .catch(() => { if (vadIsSpeaking) vadPrevAppId = null })
         // 开始录音
         vadCapturePromise = startCapture().catch((e) => {
           vadIsSpeaking = false
           vadCapturePromise = null
+          vadPrevAppId = null
           setState('idle')
           showError(String(e))
           throw e
@@ -187,7 +236,9 @@ async function startVad(): Promise<void> {
         vadIsSpeaking = false
         const speechDuration = vadSilenceStart - vadSpeakingStart
         const captureReady = vadCapturePromise
+        const prevAppId = vadPrevAppId
         vadCapturePromise = null
+        vadPrevAppId = null
         vadIsProcessing = true
         Promise.resolve(captureReady)
           .catch(() => null)
@@ -199,7 +250,7 @@ async function startVad(): Promise<void> {
             }
             setState('recognizing')
             const wav = stopCapture()
-            return window.electronAPI.recognizeWav(wav, null)
+            return window.electronAPI.recognizeWav(wav, prevAppId)
               .then(result => {
                 setState('idle')
                 if (result) showResult(result)
@@ -226,6 +277,7 @@ function stopVad(): void {
     stopCapture()
   }
   vadCapturePromise = null
+  vadPrevAppId = null
   vadSpeakingStart = 0
   vadSilenceStart = 0
   vadIsSpeaking = false
@@ -317,15 +369,27 @@ function showResult(text: string) {
 // ── 录音按钮点击 ──
 
 async function onRecordClick() {
-  if (state === 'recognizing') return
+  uiTrace('record-click.enter')
+  if (state === 'recognizing') {
+    uiTrace('record-click.skip', { reason: 'recognizing' })
+    return
+  }
 
   if (state === 'idle') {
     try {
+      uiTrace('record-click.start-capture.begin')
+      if (!focusSnapshotAppId) {
+        await captureFocusSnapshot('record-start')
+      }
+      uiTrace('record-click.start-capture.prev-app', { focusSnapshotAppId })
       startCapturePromise = startCapture()
       await startCapturePromise
+      uiTrace('record-click.start-capture.ready')
       setState('recording')
     } catch (e) {
       startCapturePromise = null
+      focusSnapshotAppId = null
+      uiTrace('record-click.start-capture.error', { error: String(e) })
       showError(String(e))
     }
   } else if (state === 'recording') {
@@ -342,17 +406,23 @@ async function onRecordClick() {
       const timeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('识别超时（30s）')), 30000),
       )
+      const prevAppId = focusSnapshotAppId
+      focusSnapshotAppId = null
+      uiTrace('record-click.stop-capture.begin-recognize', { wavBytes: wav.byteLength, prevAppId })
       const result = await Promise.race([
-        window.electronAPI.recognizeWav(wav, null),
+        window.electronAPI.recognizeWav(wav, prevAppId),
         timeout,
       ])
       console.log('[识别] 结果:', result)
+      uiTrace('record-click.stop-capture.result', { result })
       setState('idle')
       if (result) showResult(result)
       else setState('idle')
     } catch (e) {
       console.error('[识别] 失败:', e)
       setState('idle')
+      focusSnapshotAppId = null
+      uiTrace('record-click.stop-capture.error', { error: String(e) })
       showError(String(e))
     }
   }
@@ -405,10 +475,12 @@ async function applyVadEnabled(enabled: boolean, showHint: boolean) {
 }
 
 async function initVad() {
+  const version = ++vadSyncVersion
   let lastError: unknown = null
   for (let i = 0; i < 5; i += 1) {
     try {
       const enabled = await window.electronAPI.getVadEnabled()
+      if (version !== vadSyncVersion) return
       await applyVadEnabled(enabled, false)
       return
     } catch (e) {
@@ -422,46 +494,20 @@ async function initVad() {
 }
 
 async function setVadEnabled(enabled: boolean) {
+  const version = ++vadSyncVersion
+  uiTrace('vad-toggle.request', { enabled, version })
   try {
     const result = await window.electronAPI.setVadEnabled(enabled)
+    if (version !== vadSyncVersion) return
+    uiTrace('vad-toggle.applied', { requested: enabled, result, version })
     await applyVadEnabled(result, true)
   } catch (e) {
+    uiTrace('vad-toggle.error', { enabled, error: String(e) })
     showError(String(e))
   }
 }
 
-// ── 界面模式与主面板切换 ──
-
-async function openDashboard() {
-  if (currentMode === 'dashboard') return
-  currentMode = 'dashboard'
-  await window.electronAPI.switchMode('dashboard')
-
-  floatCapsuleView.style.display = ''
-  mainDashboardView.style.display = ''
-  floatCapsuleView.classList.remove('active')
-  mainDashboardView.classList.add('active')
-
-  await loadConfigToForm()
-  await renderCommandEditor()
-  await loadHotwords()
-  await loadLogs()
-}
-
-async function closeDashboard() {
-  if (currentMode === 'float') return
-  currentMode = 'float'
-  await window.electronAPI.switchMode('float')
-
-  mainDashboardView.style.display = ''
-  floatCapsuleView.style.display = ''
-  mainDashboardView.classList.remove('active')
-  floatCapsuleView.classList.add('active')
-
-  document.getElementById('save-hint')!.textContent = ''
-  document.getElementById('cmd-save-hint')!.textContent = ''
-  document.getElementById('hotword-save-hint')!.textContent = ''
-}
+// 移除原有的前端单窗体大小 toggle 函数
 
 function initTabs() {
   const tabBtns = document.querySelectorAll<HTMLButtonElement>('.menu-item')
@@ -477,13 +523,20 @@ function initTabs() {
 }
 
 async function loadConfigToForm() {
+  const urlInput = document.getElementById('cfg-url') as HTMLInputElement | null
+  if (!urlInput) return // 不在该路由视图内
+
   try {
     const cfg = await window.electronAPI.getConfig()
-      ; (document.getElementById('cfg-url') as HTMLInputElement).value = cfg.server?.url || ''
+      ; urlInput.value = cfg.server?.url || ''
       ; (document.getElementById('cfg-hotkey') as HTMLInputElement).value = cfg.hotkey?.record || ''
       ; (document.getElementById('cfg-clipboard') as HTMLInputElement).checked = cfg.input?.useClipboard || false
       ; (document.getElementById('cfg-vad') as HTMLInputElement).checked = cfg.vad?.enabled || false
       ; (document.getElementById('dashboard-vad-toggle') as HTMLInputElement).checked = cfg.vad?.enabled || false
+      ; (document.getElementById('cfg-llm-enabled') as HTMLInputElement).checked = cfg.llm?.enabled || false
+      ; (document.getElementById('cfg-llm-baseurl') as HTMLInputElement).value = cfg.llm?.baseUrl || ''
+      ; (document.getElementById('cfg-llm-apikey') as HTMLInputElement).value = cfg.llm?.apiKey || ''
+      ; (document.getElementById('cfg-llm-model') as HTMLInputElement).value = cfg.llm?.model || ''
     // ASR 模式
     const asrMode = cfg.asr?.mode ?? 'api'
       ; (document.getElementById('asr-mode-api') as HTMLInputElement).checked = asrMode === 'api'
@@ -494,7 +547,8 @@ async function loadConfigToForm() {
 }
 
 async function renderCommandList() {
-  const list = document.getElementById('cmd-list')!
+  const list = document.getElementById('cmd-list')
+  if (!list) return
   list.innerHTML = ''
   try {
     const cfg = await window.electronAPI.getConfig()
@@ -515,7 +569,8 @@ async function renderCommandList() {
 
 // 渲染语音指令编辑器（可增删改）
 async function renderCommandEditor() {
-  const editorList = document.getElementById('cmd-editor-list')!
+  const editorList = document.getElementById('cmd-editor-list')
+  if (!editorList) return
   editorList.innerHTML = ''
   try {
     const cfg = await window.electronAPI.getConfig()
@@ -583,6 +638,7 @@ async function saveCommands() {
 
 async function saveConfig() {
   const hint = document.getElementById('save-hint')!
+  const llmHint = document.getElementById('llm-save-hint')
   try {
     const cfg = await window.electronAPI.getConfig()
     cfg.server.url = (document.getElementById('cfg-url') as HTMLInputElement).value.trim()
@@ -591,12 +647,27 @@ async function saveConfig() {
     // ASR 模式
     const asrMode = (document.getElementById('asr-mode-local') as HTMLInputElement).checked ? 'local' : 'api'
     cfg.asr = { ...cfg.asr, mode: asrMode }
+    // LLM 配置
+    cfg.llm = {
+      enabled: (document.getElementById('cfg-llm-enabled') as HTMLInputElement).checked,
+      baseUrl: (document.getElementById('cfg-llm-baseurl') as HTMLInputElement).value.trim(),
+      apiKey: (document.getElementById('cfg-llm-apikey') as HTMLInputElement).value.trim(),
+      model: (document.getElementById('cfg-llm-model') as HTMLInputElement).value.trim()
+    }
     await window.electronAPI.saveConfig(cfg)
     hint.textContent = '已保存，部分设置重启后生效'
     hint.style.color = '#4ade80'
+    if (llmHint) {
+      llmHint.textContent = '应用已持久化'
+      llmHint.style.color = '#4ade80'
+    }
   } catch (e) {
     hint.textContent = '保存失败: ' + String(e)
     hint.style.color = '#f87171'
+    if (llmHint) {
+      llmHint.textContent = '保存失败'
+      llmHint.style.color = '#f87171'
+    }
   }
 }
 
@@ -608,6 +679,9 @@ let hotwordSearchQuery = ''
 
 // 从配置加载热词
 async function loadHotwords() {
+  const tabsContainer = document.getElementById('scene-tabs')
+  if (!tabsContainer) return
+
   try {
     const cfg = await window.electronAPI.getConfig()
     hotwordScenes = cfg.hotwords ?? [{ name: '全局', words: [] }]
@@ -758,11 +832,12 @@ function updateAsrModeUI(mode: string) {
 
 // ── 模型管理 ──
 
-let currentSelectedModel = 'paraformer-zh-small'
+let currentSelectedModel = 'paraformer-zh-contextual-quant'
 
 async function renderModelList(selectedModel?: string) {
+  const container = document.getElementById('model-list')
+  if (!container) return
   if (selectedModel) currentSelectedModel = selectedModel
-  const container = document.getElementById('model-list')!
   container.innerHTML = ''
   try {
     const models = await window.electronAPI.getModelStatuses()
@@ -805,7 +880,7 @@ async function renderModelList(selectedModel?: string) {
       } else {
         const dlBtn = document.createElement('button')
         dlBtn.className = 'btn-sm btn-sm-primary'
-        dlBtn.textContent = '下载'
+        dlBtn.textContent = '准备模型'
         dlBtn.id = `dl-btn-${m.id}`
         dlBtn.addEventListener('click', () => downloadModelUI(m.id))
         actions.appendChild(dlBtn)
@@ -833,13 +908,16 @@ async function selectModel(modelId: string) {
 
 async function downloadModelUI(modelId: string) {
   const btn = document.getElementById(`dl-btn-${modelId}`) as HTMLButtonElement
-  if (btn) { btn.disabled = true; btn.textContent = '下载中...' }
+  const progress = document.getElementById(`dl-progress-${modelId}`)
+  if (btn) { btn.disabled = true; btn.textContent = '准备中...' }
+  if (progress) progress.textContent = '首次使用需下载模型，请耐心等待...'
   const result = await window.electronAPI.downloadModel(modelId)
   if (result.success) {
     await renderModelList()
   } else {
-    if (btn) { btn.disabled = false; btn.textContent = '下载' }
-    alert('下载失败: ' + (result.error || '未知错误'))
+    if (btn) { btn.disabled = false; btn.textContent = '准备模型' }
+    if (progress) progress.textContent = ''
+    alert('准备失败: ' + (result.error || '未知错误'))
   }
 }
 
@@ -869,7 +947,8 @@ function escapeHtml(s: string): string {
 }
 
 async function loadLogs() {
-  const container = document.getElementById('log-container')!
+  const container = document.getElementById('log-container')
+  if (!container) return
   container.innerHTML = ''
   try {
     const logs = await window.electronAPI.getLogs()
@@ -880,15 +959,32 @@ async function loadLogs() {
 // ── 初始化 ──
 
 window.addEventListener('DOMContentLoaded', () => {
+  // --- 边界拦截与单页面路由 (hash路由分发) ---
+  if (window.location.hash.includes('rewrite')) {
+    initRewriteUI()
+    return
+  }
+  if (window.location.hash.includes('dashboard')) {
+    initDashboardUI()
+    return
+  }
+
+  // 默认进入浮窗模式
+  initFloatCapsuleUI()
+})
+
+// ======================================
+//        FLOAT CAPSULE (主悬浮窗)
+// ======================================
+function initFloatCapsuleUI() {
+  document.getElementById('float-capsule-view')!.classList.add('active')
+  document.getElementById('main-dashboard-view')!.classList.remove('active')
+
   recordBtn = document.getElementById('record-btn') as HTMLButtonElement
   vadToggleBtn = document.getElementById('vad-toggle-btn') as HTMLButtonElement | null
   statusText = document.getElementById('status-text') as HTMLSpanElement | null
   vadIndicator = document.getElementById('vad-indicator') as HTMLSpanElement | null
-  dashboardVadToggle = document.getElementById('dashboard-vad-toggle') as HTMLInputElement | null
   errorBar = document.getElementById('error-bar') as HTMLDivElement | null
-
-  floatCapsuleView = document.getElementById('float-capsule-view') as HTMLDivElement
-  mainDashboardView = document.getElementById('main-dashboard-view') as HTMLDivElement
 
   // 悬浮球纯 JS 拖动兼顾单击双击兼容 (绕过 -webkit-app-region)
   let isDragging = false
@@ -899,16 +995,24 @@ window.addEventListener('DOMContentLoaded', () => {
 
   recordBtn.addEventListener('pointerdown', async (e) => {
     if (e.button !== 0) return
+    uiTrace('record-btn.pointerdown', { button: e.button, pointerId: e.pointerId })
     isDragging = true
     dragMoved = false
     pointerId = e.pointerId
     recordBtn.setPointerCapture(pointerId)
 
-    startX = e.screenX
-    startY = e.screenY
-    const pos = await window.electronAPI.getWindowPosition()
-    winStartX = pos[0]
-    winStartY = pos[1]
+    try {
+      startX = e.screenX
+      startY = e.screenY
+      const snapshotPromise = captureFocusSnapshot('record-pointerdown')
+      const pos = await window.electronAPI.getWindowPosition()
+      winStartX = pos[0]
+      winStartY = pos[1]
+      await snapshotPromise
+      uiTrace('record-btn.pointerdown.ready', { focusSnapshotAppId, winStartX, winStartY })
+    } catch (err) {
+      uiTrace('record-btn.pointerdown.error', { error: String(err) })
+    }
   })
 
   recordBtn.addEventListener('pointermove', (e) => {
@@ -925,67 +1029,35 @@ window.addEventListener('DOMContentLoaded', () => {
     if (!isDragging) return
     isDragging = false
     recordBtn.releasePointerCapture(pointerId)
+    uiTrace('record-btn.pointerup', { pointerId: e.pointerId, dragMoved })
   })
 
   // 悬浮球事件（单击录音，双击/右键呼出面板）
   recordBtn.addEventListener('click', (e) => {
     if (dragMoved) {
+      uiTrace('record-btn.click.ignored', { reason: 'drag-moved' })
       e.preventDefault()
       e.stopPropagation()
       return
     }
+    uiTrace('record-btn.click')
     onRecordClick()
   })
   recordBtn.addEventListener('dblclick', (e) => {
     if (dragMoved) return
-    openDashboard()
+    window.electronAPI.openDashboard()
   })
   recordBtn.addEventListener('contextmenu', (e) => {
     e.preventDefault()
-    if (!dragMoved) openDashboard()
+    if (!dragMoved) window.electronAPI.openDashboard()
   })
 
+  // 悬浮球 VAD 按钮：点击切换
   vadToggleBtn?.addEventListener('click', (e) => {
     e.preventDefault()
     e.stopPropagation()
+    uiTrace('vad-btn.click', { targetEnabled: !vadState.enabled })
     setVadEnabled(!vadState.enabled)
-  })
-
-  // 遗留绑定的安全处理
-  document.getElementById('open-dashboard-btn')?.addEventListener('click', openDashboard)
-
-  document.getElementById('close-dashboard-btn')!.addEventListener('click', closeDashboard)
-  document.getElementById('save-btn')!.addEventListener('click', saveConfig)
-  document.getElementById('add-cmd-btn')!.addEventListener('click', () => {
-    appendCommandRow(document.getElementById('cmd-editor-list')!)
-  })
-  document.getElementById('save-cmd-btn')!.addEventListener('click', saveCommands)
-  // 热词事件绑定
-  document.getElementById('hotword-input')!.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      const input = e.target as HTMLInputElement
-      addHotword(input.value)
-      input.value = ''
-    }
-  })
-  document.getElementById('hotword-search')!.addEventListener('input', (e) => {
-    hotwordSearchQuery = (e.target as HTMLInputElement).value
-    renderHotwordTags()
-  })
-  document.getElementById('add-scene-btn')!.addEventListener('click', addScene)
-  document.getElementById('save-hotwords-btn')!.addEventListener('click', saveHotwords)
-  // ASR 模式切换
-  document.querySelectorAll<HTMLInputElement>('input[name="asr-mode"]').forEach(radio => {
-    radio.addEventListener('change', () => updateAsrModeUI(radio.value))
-  })
-  // 日志清空
-  document.getElementById('log-clear-btn')!.addEventListener('click', () => {
-    document.getElementById('log-container')!.innerHTML = ''
-  })
-  initTabs()
-
-  dashboardVadToggle?.addEventListener('change', () => {
-    setVadEnabled(Boolean(dashboardVadToggle?.checked))
   })
 
   // 监听热键状态（主进程推送）
@@ -1036,15 +1108,175 @@ window.addEventListener('DOMContentLoaded', () => {
   window.electronAPI.onToggleVad((enabled) => {
     applyVadEnabled(Boolean(enabled), true).catch((e) => showError(String(e)))
   })
+  window.electronAPI.onPermissionWarning((message) => {
+    if (!message) return
+    showError(message)
+    console.warn('[权限提醒]', message)
+  })
+
+  initVad()
+}
+
+// ======================================
+//        DASHBOARD (控制台设置窗)
+// ======================================
+function initDashboardUI() {
+  document.getElementById('float-capsule-view')!.classList.remove('active')
+  document.getElementById('main-dashboard-view')!.classList.add('active')
+
+  dashboardVadToggle = document.getElementById('dashboard-vad-toggle') as HTMLInputElement | null
+
+  document.getElementById('close-dashboard-btn')!.addEventListener('click', () => {
+    window.close() // 直接关闭独立子窗口
+  })
+  document.getElementById('save-btn')!.addEventListener('click', saveConfig)
+  document.getElementById('llm-save-btn')?.addEventListener('click', saveConfig)
+  document.getElementById('add-cmd-btn')!.addEventListener('click', () => {
+    appendCommandRow(document.getElementById('cmd-editor-list')!)
+  })
+  document.getElementById('save-cmd-btn')!.addEventListener('click', saveCommands)
+  // 热词事件绑定
+  document.getElementById('hotword-input')!.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const input = e.target as HTMLInputElement
+      addHotword(input.value)
+      input.value = ''
+    }
+  })
+  document.getElementById('hotword-search')!.addEventListener('input', (e) => {
+    hotwordSearchQuery = (e.target as HTMLInputElement).value
+    renderHotwordTags()
+  })
+  document.getElementById('add-scene-btn')!.addEventListener('click', () => {
+    const name = prompt('请输入新场景名称:')
+    if (name) {
+      hotwordScenes.push({ name, words: [] })
+      activeSceneIndex = hotwordScenes.length - 1
+      renderSceneTabs()
+    }
+  })
+  document.getElementById('save-hotwords-btn')!.addEventListener('click', saveHotwords)
+
+  // ASR 模式切换
+  document.querySelectorAll<HTMLInputElement>('input[name="asr-mode"]').forEach(radio => {
+    radio.addEventListener('change', () => updateAsrModeUI(radio.value))
+  })
+  document.getElementById('asr-mode-api')!.addEventListener('change', () => updateAsrModeUI('api'))
+  document.getElementById('asr-mode-local')!.addEventListener('change', () => updateAsrModeUI('local'))
+
+  // 日志清空
+  document.getElementById('log-clear-btn')?.addEventListener('click', async () => {
+    await window.electronAPI.clearLogs()
+    document.getElementById('log-container')!.innerHTML = ''
+  })
+
+  dashboardVadToggle?.addEventListener('change', () => {
+    setVadEnabled(Boolean(dashboardVadToggle?.checked))
+  })
 
   // 模型下载进度
   window.electronAPI.onModelDownloadProgress((data) => {
     const el = document.getElementById(`dl-progress-${data.modelId}`)
-    if (el) el.textContent = `${data.percent}%`
+    if (el) {
+      if (data.status) {
+        el.textContent = data.percent > 0 ? `${data.status} (${data.percent}%)` : data.status
+      } else if (data.percent >= 0) {
+        el.textContent = `${data.percent}%`
+      }
+    }
   })
 
   // 实时日志推送
   window.electronAPI.onLogEntry((entry) => appendLogEntry(entry))
 
-  initVad()
-})
+  initTabs()
+  loadConfigToForm()
+  renderCommandEditor()
+  loadHotwords()
+  loadLogs()
+}
+
+// ── 智能划词重写窗体专用逻辑 ──
+function initRewriteUI() {
+  document.getElementById('float-capsule-view')!.style.display = 'none'
+  document.getElementById('main-dashboard-view')!.style.display = 'none'
+  document.getElementById('rewrite-view')!.classList.add('active')
+
+  const originalEl = document.getElementById('rw-original-text') as HTMLTextAreaElement
+  const instructEl = document.getElementById('rw-instruction') as HTMLInputElement
+  const resultEl = document.getElementById('rw-result-text') as HTMLTextAreaElement
+  const statusEl = document.getElementById('rw-status-indicator') as HTMLSpanElement
+  const copyBtn = document.getElementById('rw-copy-btn') as HTMLButtonElement
+  const replaceBtn = document.getElementById('rw-replace-btn') as HTMLButtonElement
+  const cancelBtn = document.getElementById('rw-cancel-btn') as HTMLButtonElement
+  const closeBtn = document.getElementById('rw-close-btn') as HTMLButtonElement
+  const submitBtn = document.getElementById('rw-submit-btn') as HTMLButtonElement
+
+  window.electronAPI.onInitRewrite((text: string) => {
+    originalEl.value = text
+    instructEl.value = ''
+    resultEl.value = ''
+    statusEl.textContent = '等待指令'
+    replaceBtn.disabled = true
+    instructEl.focus()
+  })
+
+  window.electronAPI.onRewriteChunk((chunk: string) => {
+    resultEl.value += chunk
+    resultEl.scrollTop = resultEl.scrollHeight
+  })
+
+  async function doRewrite() {
+    const text = originalEl.value
+    const instruction = instructEl.value.trim()
+    if (!instruction) return
+
+    statusEl.textContent = '生成中...'
+    resultEl.value = ''
+    submitBtn.disabled = true
+
+    try {
+      await window.electronAPI.executeRewrite(text, instruction)
+      statusEl.textContent = '生成完成'
+      replaceBtn.disabled = false
+      replaceBtn.focus()
+    } catch (e: any) {
+      statusEl.textContent = '出错'
+      resultEl.value = '调用错误: ' + String(e)
+    } finally {
+      submitBtn.disabled = false
+    }
+  }
+
+  submitBtn.addEventListener('click', doRewrite)
+  instructEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doRewrite()
+  })
+
+  replaceBtn.addEventListener('click', () => {
+    window.electronAPI.replaceText(resultEl.value)
+  })
+
+  copyBtn.addEventListener('click', () => {
+    if (!resultEl.value) return
+    navigator.clipboard.writeText(resultEl.value)
+    const oldText = copyBtn.textContent
+    copyBtn.textContent = '已复制!'
+    setTimeout(() => { copyBtn.textContent = oldText }, 2000)
+  })
+
+  cancelBtn.addEventListener('click', () => window.electronAPI.closeRewrite())
+  closeBtn.addEventListener('click', () => window.electronAPI.closeRewrite())
+
+  // 全局热键干预
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      window.electronAPI.closeRewrite()
+    }
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      if (!replaceBtn.disabled) {
+        window.electronAPI.replaceText(resultEl.value)
+      }
+    }
+  })
+}

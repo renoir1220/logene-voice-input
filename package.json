@@ -8,11 +8,12 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "sidecar:install": "pip install -r python/requirements.txt",
+    "sidecar:build": "python3 python/build_sidecar.py"
   },
   "dependencies": {
     "electron-store": "^8.2.0",
-    "sherpa-onnx-node": "^1.12.25",
     "uiohook-napi": "^1.5.4"
   },
   "devDependencies": {
@@ -37,6 +38,13 @@
     },
     "linux": {
       "target": "AppImage"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "dist/sidecar/${platform}/",
+        "to": "sidecar/${platform}/",
+        "filter": ["**/*"]
+      }
+    ]
   }
 }
