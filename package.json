@@ -2,20 +2,41 @@
   "name": "logene-voice-input",
   "private": true,
   "version": "0.1.0",
-  "type": "module",
+  "main": "out/main/index.js",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "electron-store": "^8.2.0",
+    "sherpa-onnx-node": "^1.12.25",
+    "uiohook-napi": "^1.5.4"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
+    "@vitest/coverage-v8": "^4.0.18",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "electron-vite": "^5.0.0",
+    "typescript": "~5.6.2",
     "vite": "^6.0.3",
-    "typescript": "~5.6.2"
+    "vitest": "^4.0.18"
+  },
+  "build": {
+    "appId": "com.logene.voice-input",
+    "productName": "Logene Voice Input",
+    "mac": {
+      "target": "dmg",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }
