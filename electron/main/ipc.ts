@@ -179,6 +179,14 @@ export function setupIpc(
       server: { ...current.server, ...cfg.server },
       hotkey: { ...current.hotkey, ...cfg.hotkey },
       input: { ...current.input, ...cfg.input },
+      audioCapture: {
+        ...current.audioCapture,
+        ...cfg.audioCapture,
+        inputConstraints: {
+          ...current.audioCapture.inputConstraints,
+          ...(cfg.audioCapture?.inputConstraints ?? {}),
+        },
+      },
       vad: { ...current.vad, ...cfg.vad, enabled: vadEnabled },
       voiceCommands: cfg.voiceCommands ?? current.voiceCommands,
       hotwords: cfg.hotwords ?? current.hotwords,
@@ -188,6 +196,9 @@ export function setupIpc(
         rules: Array.isArray(cfg.textRules.rules) ? cfg.textRules.rules : current.textRules.rules,
       } : current.textRules,
       asr: { ...current.asr, ...cfg.asr },
+      onboarding: cfg.onboarding
+        ? { ...current.onboarding, ...cfg.onboarding }
+        : current.onboarding,
       logging: { ...current.logging, ...cfg.logging },
       llm: cfg.llm ? {
         ...current.llm,
@@ -269,7 +280,7 @@ export function setupIpc(
       height: 600,
       minWidth: 640,
       minHeight: 480,
-      title: 'Logene Voice Input - 控制台',
+      title: '朗珈语音输入法 - 控制台',
       titleBarStyle: 'hidden',
       trafficLightPosition: { x: 14, y: 14 },
       webPreferences: {

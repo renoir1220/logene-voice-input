@@ -153,16 +153,38 @@ export interface LlmTaskPromptConfig {
   userPromptTemplate: string
 }
 
+export interface AudioInputConstraintsConfig {
+  channelCount: number
+  echoCancellation: boolean
+  noiseSuppression: boolean
+  autoGainControl: boolean
+}
+
+export interface AudioCaptureConfig {
+  inputConstraints: AudioInputConstraintsConfig
+  postRollMs: number
+  tailSilenceMs: number
+  workletFlushTimeoutMs: number
+}
+
+export interface OnboardingConfig {
+  completed: boolean
+  completedAt: string
+  version: number
+}
+
 // 配置类型（与主进程保持一致）
 export interface AppConfig {
   server: { url: string; asrConfigId: string }
   hotkey: { record: string }
   input: { useClipboard: boolean }
+  audioCapture: AudioCaptureConfig
   vad: { enabled: boolean; speechThreshold: number; silenceTimeoutMs: number; minSpeechDurationMs: number }
   voiceCommands: Record<string, string>
   hotwords: HotwordScene[]
   textRules: TextRulesConfig
   asr: { mode: 'api' | 'local'; localModel: string; puncEnabled: boolean }
+  onboarding?: OnboardingConfig
   llm: LlmConfig
   logging: { enableDebug: boolean }
 }

@@ -1,5 +1,6 @@
 /* ── 视图 2：主界面 控制面板 (Typeless 式) ── */
 #main-dashboard-view {
+  position: relative;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
@@ -16,15 +17,40 @@
 }
 
 .sidebar {
-  width: 220px;
+  width: 236px;
   background: #f1f5f9;
   border-right: 1px solid #e2e8f0;
   display: flex;
   flex-direction: column;
-  padding: 44px 8px 16px;
+  padding: 44px 10px 16px;
   gap: 4px;
   -webkit-app-region: drag;
   /* 左侧大片空白都可以作为底拖动区；顶部 44px 给 macOS 红绿灯留空间 */
+}
+
+.sidebar-brand {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px 10px;
+  margin-bottom: 8px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.sidebar-brand-logo {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.sidebar-brand-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #1e293b;
+  line-height: 1.2;
 }
 
 .menu-item {
@@ -59,7 +85,7 @@
 
 .menu-item.active {
   background: #ffffff;
-  color: #0ea5e9;
+  color: var(--brand-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
 
@@ -86,17 +112,18 @@
 }
 
 .content-header {
-  height: 44px;
+  height: 26px;
   flex-shrink: 0;
   -webkit-app-region: drag;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   margin-bottom: 0;
   position: sticky;
   top: 0;
-  background: #ffffff;
+  background: transparent;
   z-index: 10;
+  padding-bottom: 0;
 }
 
 .close-dashboard-btn {
@@ -282,7 +309,7 @@
 }
 
 .input:focus {
-  border-color: #0ea5e9;
+  border-color: var(--brand-primary);
   background: #fff;
   box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
 }
@@ -1341,4 +1368,130 @@ input:checked+.slider:before {
   padding-left: 12px;
   color: #64748b;
   margin: 0 0 12px;
+}
+
+/* ── 首次使用引导 ── */
+.onboarding-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 240;
+  display: flex;
+  -webkit-app-region: no-drag;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.28);
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+}
+
+.onboarding-overlay[hidden] {
+  display: none !important;
+}
+
+.onboarding-dialog {
+  position: relative;
+  z-index: 2;
+  width: min(680px, calc(100% - 64px));
+  border-radius: 16px;
+  border: 1px solid rgba(14, 165, 233, 0.2);
+  background: linear-gradient(160deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: 0 26px 48px rgba(2, 28, 36, 0.35);
+  overflow: hidden;
+}
+
+.onboarding-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #dbeafe;
+  background: linear-gradient(120deg, #f0f9ff 0%, #eff6ff 100%);
+}
+
+.onboarding-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.onboarding-title-wrap h3 {
+  margin: 0;
+  font-size: 17px;
+  color: #1e293b;
+}
+
+.onboarding-step-index {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #0369a1;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(14, 165, 233, 0.22);
+}
+
+.onboarding-close-btn {
+  padding: 6px 12px;
+  width: auto;
+  border-style: solid;
+  border-color: #bae6fd;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.onboarding-body {
+  padding: 18px 20px 10px;
+}
+
+.onboarding-step-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 8px;
+}
+
+.onboarding-step-desc {
+  font-size: 14px;
+  color: #475569;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+
+.onboarding-step-points {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+}
+
+.onboarding-step-points li {
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.onboarding-step-status {
+  min-height: 24px;
+  margin-top: 12px;
+  color: var(--brand-primary-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.onboarding-footer {
+  padding: 14px 20px 20px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.onboarding-footer .btn {
+  min-width: 124px;
+}
+
+.onboarding-highlight {
+  border-radius: 12px;
+  outline: 2px solid rgba(14, 165, 233, 0.65);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.75);
 }

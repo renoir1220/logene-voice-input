@@ -359,14 +359,8 @@ function buildHotwordsString(modelInfo: ModelInfo): string {
     )
   }
 
-  let content = ''
-  if (modelInfo.hotwordFormat === 'space-separated') {
-    // funasr_onnx ContextualParaformer 使用空格分隔热词
-    content = words.join(' ')
-  } else {
-    // FunASR AutoModel 热词格式：每行 "词 权重"
-    content = words.map(w => `${w} 20`).join('\n')
-  }
+  // funasr_onnx ContextualParaformer 使用空格分隔热词
+  const content = words.join(' ')
   logger.info(`热词已构建: ${words.length} 个词，格式=${modelInfo.hotwordFormat}`)
   return content
 }
@@ -401,7 +395,7 @@ export async function initLocalRecognizer(
   onInitProgress = progressCb || null
 
   try {
-    // 发送 init 命令，sidecar 会按模型后端初始化（torch / onnx）
+    // 发送 init 命令，sidecar 会按模型后端初始化（onnx）
     // 超时 10 分钟：首次可能需要下载并导出模型
     const initResp = await sendRequest({
       cmd: 'init',

@@ -137,7 +137,7 @@ export function initFloatCapsuleUI() {
         await p.catch(() => { })
         setStartCapturePromise(null)
       }
-      const wav = stopCapture()
+      const wav = await stopCapture()
       console.log('[热键识别] 发送 WAV，大小:', wav.byteLength)
       const result = await window.electronAPI.recognizeWav(wav, prevAppId)
       console.log('[热键识别] 结果:', result)

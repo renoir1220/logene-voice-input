@@ -122,6 +122,26 @@ export interface LoggingConfig {
   enableDebug: boolean
 }
 
+export interface AudioInputConstraintsConfig {
+  channelCount: number
+  echoCancellation: boolean
+  noiseSuppression: boolean
+  autoGainControl: boolean
+}
+
+export interface AudioCaptureConfig {
+  inputConstraints: AudioInputConstraintsConfig
+  postRollMs: number
+  tailSilenceMs: number
+  workletFlushTimeoutMs: number
+}
+
+export interface OnboardingConfig {
+  completed: boolean
+  completedAt: string
+  version: number
+}
+
 // 应用配置类型
 export interface AppConfig {
   server: {
@@ -134,6 +154,7 @@ export interface AppConfig {
   input: {
     useClipboard: boolean
   }
+  audioCapture: AudioCaptureConfig
   vad: {
     enabled: boolean
     speechThreshold: number
@@ -145,9 +166,10 @@ export interface AppConfig {
   textRules: TextRulesConfig
   asr: {
     mode: 'api' | 'local'    // 识别模式：远程 API 或本地模型
-    localModel: string        // 本地模型标识，如 'paraformer-zh'
+    localModel: string        // 本地模型标识，如 'paraformer-zh-contextual-quant'
     puncEnabled: boolean      // 本地识别是否启用 PUNC 标点恢复
   }
+  onboarding?: OnboardingConfig
   llm: LlmConfig
   logging: LoggingConfig
 }
@@ -157,6 +179,17 @@ const defaultConfig: AppConfig = {
   server: { url: 'http://localhost:3000', asrConfigId: '' },
   hotkey: { record: 'Alt+Space' },
   input: { useClipboard: false },
+  audioCapture: {
+    inputConstraints: {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    },
+    postRollMs: 200,
+    tailSilenceMs: 120,
+    workletFlushTimeoutMs: 220,
+  },
   vad: {
     enabled: false,
     speechThreshold: 0.03,
@@ -191,6 +224,11 @@ const defaultConfig: AppConfig = {
   }],
   textRules: cloneTextRulesConfig(),
   asr: { mode: 'api', localModel: 'paraformer-zh-contextual-quant', puncEnabled: true },
+  onboarding: {
+    completed: false,
+    completedAt: '',
+    version: 1,
+  },
   llm: {
     enabled: true,
     asrPostProcessEnabled: true,
@@ -226,6 +264,7 @@ export function getConfig(): AppConfig {
   const cfg = store.store as AppConfig
   cfg.llm = normalizeLlmConfig(cfg.llm as unknown)
   cfg.textRules = normalizeTextRulesConfig(cfg.textRules as unknown)
+  cfg.audioCapture = normalizeAudioCaptureConfig(cfg.audioCapture as unknown)
   if (!cfg.asr || typeof cfg.asr !== 'object') {
     cfg.asr = { ...defaultConfig.asr }
   }
@@ -238,10 +277,9 @@ export function getConfig(): AppConfig {
   if (typeof cfg.logging.enableDebug !== 'boolean') {
     cfg.logging.enableDebug = false
   }
-  // 迁移旧模型 ID：统一切到“量化+热词”版本，确保本地模型始终支持热词注入。
-  if (cfg.asr?.localModel === 'paraformer-zh' || cfg.asr?.localModel === 'paraformer-zh-quant') {
-    cfg.asr.localModel = 'paraformer-zh-contextual-quant'
-  } else if (cfg.asr?.localModel && !['paraformer-zh-contextual-quant', 'paraformer-zh', 'sensevoice-small'].includes(cfg.asr.localModel)) {
+  cfg.onboarding = normalizeOnboardingConfig(cfg.onboarding)
+  // 迁移旧模型 ID：本地识别仅保留 ONNX 量化热词模型。
+  if (cfg.asr?.localModel !== 'paraformer-zh-contextual-quant') {
     cfg.asr.localModel = 'paraformer-zh-contextual-quant'
   }
   store.store = cfg
@@ -251,6 +289,7 @@ export function getConfig(): AppConfig {
 export function saveConfig(config: AppConfig): void {
   config.llm = normalizeLlmConfig(config.llm as unknown)
   config.textRules = normalizeTextRulesConfig(config.textRules as unknown)
+  config.audioCapture = normalizeAudioCaptureConfig(config.audioCapture as unknown)
   if (!config.asr || typeof config.asr !== 'object') {
     config.asr = { ...defaultConfig.asr }
   }
@@ -263,7 +302,67 @@ export function saveConfig(config: AppConfig): void {
   if (typeof config.logging.enableDebug !== 'boolean') {
     config.logging.enableDebug = false
   }
+  config.onboarding = normalizeOnboardingConfig(config.onboarding)
   store.store = config
+}
+
+function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof raw === 'number' && Number.isFinite(raw) ? raw : fallback
+  return Math.min(max, Math.max(min, n))
+}
+
+function normalizeAudioInputConstraints(raw: unknown): AudioInputConstraintsConfig {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    channelCount: Math.round(clampNumber(
+      source.channelCount,
+      defaultConfig.audioCapture.inputConstraints.channelCount,
+      1,
+      2,
+    )),
+    echoCancellation: typeof source.echoCancellation === 'boolean'
+      ? source.echoCancellation
+      : defaultConfig.audioCapture.inputConstraints.echoCancellation,
+    noiseSuppression: typeof source.noiseSuppression === 'boolean'
+      ? source.noiseSuppression
+      : defaultConfig.audioCapture.inputConstraints.noiseSuppression,
+    autoGainControl: typeof source.autoGainControl === 'boolean'
+      ? source.autoGainControl
+      : defaultConfig.audioCapture.inputConstraints.autoGainControl,
+  }
+}
+
+function normalizeAudioCaptureConfig(raw: unknown): AudioCaptureConfig {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    inputConstraints: normalizeAudioInputConstraints(source.inputConstraints),
+    postRollMs: Math.round(clampNumber(source.postRollMs, defaultConfig.audioCapture.postRollMs, 0, 1200)),
+    tailSilenceMs: Math.round(clampNumber(source.tailSilenceMs, defaultConfig.audioCapture.tailSilenceMs, 0, 1200)),
+    workletFlushTimeoutMs: Math.round(clampNumber(
+      source.workletFlushTimeoutMs,
+      defaultConfig.audioCapture.workletFlushTimeoutMs,
+      80,
+      2000,
+    )),
+  }
+}
+
+function normalizeOnboardingConfig(raw: unknown): OnboardingConfig {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    completed: typeof source.completed === 'boolean'
+      ? source.completed
+      : defaultConfig.onboarding!.completed,
+    completedAt: typeof source.completedAt === 'string'
+      ? source.completedAt
+      : defaultConfig.onboarding!.completedAt,
+    version: Math.round(clampNumber(
+      source.version,
+      defaultConfig.onboarding!.version,
+      1,
+      999,
+    )),
+  }
 }
 
 function cloneTextRulesConfig(source: TextRulesConfig = DEFAULT_TEXT_RULES): TextRulesConfig {

@@ -1,5 +1,5 @@
-import type { RecordState, AsrRuntimeStatus } from './types'
-import { startCapture, stopCapture, startVad, stopVad, VadState, VadCallbacks } from './audio'
+import type { RecordState, AsrRuntimeStatus, AppConfig } from './types'
+import { startCapture, stopCapture, startVad, stopVad, setAudioCaptureConfig, VadState, VadCallbacks } from './audio'
 
 // ── 共享 UI 状态 ──
 
@@ -11,6 +11,8 @@ export let vadIndicator: HTMLSpanElement | null = null
 export let dashboardVadToggle: HTMLInputElement | null = null
 export let errorBar: HTMLDivElement | null = null
 let errorTimer: ReturnType<typeof setTimeout> | null = null
+let successFlashTimer: ReturnType<typeof setTimeout> | null = null
+const SUCCESS_FLASH_MS = 180
 
 let startCapturePromise: Promise<void> | null = null
 let focusSnapshotAppId: string | null = null
@@ -75,14 +77,14 @@ export function setState(newState: RecordState | string, text?: string) {
     case 'idle':
       if (statusText) {
         statusText.textContent = text || '就绪'
-        statusText.classList.remove('result')
+        statusText.classList.remove('result', 'command')
       }
       break
     case 'recording':
       recordBtn?.classList.add('recording')
       if (statusText) {
         statusText.textContent = '录音中...'
-        statusText.classList.remove('result')
+        statusText.classList.remove('result', 'command')
       }
       hideError()
       break
@@ -90,17 +92,8 @@ export function setState(newState: RecordState | string, text?: string) {
       recordBtn?.classList.add('recognizing')
       if (statusText) {
         statusText.textContent = '识别中...'
-        statusText.classList.remove('result')
+        statusText.classList.remove('result', 'command')
       }
-      break
-    case 'success':
-      recordBtn?.classList.add('success')
-      if (statusText) {
-        statusText.textContent = '完成！'
-      }
-      setTimeout(() => {
-        if (state === 'success') setState('idle')
-      }, 1000)
       break
   }
 }
@@ -130,7 +123,10 @@ export function hideError() {
 
 export function showResult(text: string) {
   hideError()
-  setState('success')
+  if (state !== 'idle') {
+    setState('idle')
+  }
+  flashSuccessState()
   const isCommand = text.includes('⌨')
   if (statusText) {
     statusText.textContent = text || '（空）'
@@ -145,6 +141,20 @@ export function showResult(text: string) {
       }
     }, 3000)
   }
+}
+
+function flashSuccessState() {
+  if (!recordBtn) return
+  if (successFlashTimer) {
+    clearTimeout(successFlashTimer)
+    successFlashTimer = null
+  }
+  recordBtn.classList.remove('success')
+  recordBtn.classList.add('success')
+  successFlashTimer = setTimeout(() => {
+    recordBtn.classList.remove('success')
+    successFlashTimer = null
+  }, SUCCESS_FLASH_MS)
 }
 
 // ── ASR Runtime Status ──
@@ -188,6 +198,7 @@ export async function ensureAsrReadyBeforeCapture(): Promise<boolean> {
   let cfg = null
   try {
     cfg = await window.electronAPI.getConfig()
+    applyAudioCaptureFromConfig(cfg)
   } catch {
     return true
   }
@@ -201,6 +212,11 @@ export async function ensureAsrReadyBeforeCapture(): Promise<boolean> {
     return false
   }
   return true
+}
+
+function applyAudioCaptureFromConfig(cfg: Pick<AppConfig, 'audioCapture'> | null | undefined) {
+  if (!cfg) return
+  setAudioCaptureConfig(cfg.audioCapture)
 }
 
 // ── 录音按钮点击 ──
@@ -237,7 +253,7 @@ export async function onRecordClick() {
         await startCapturePromise.catch(() => { })
         startCapturePromise = null
       }
-      const wav = stopCapture()
+      const wav = await stopCapture()
       console.log('[识别] 发送 WAV 到主进程，大小:', wav.byteLength)
       const prevAppId = focusSnapshotAppId
       focusSnapshotAppId = null
@@ -283,6 +299,7 @@ function makeVadCallbacks(): VadCallbacks {
 export async function applyVadEnabled(enabled: boolean, showHint: boolean) {
   if (enabled) {
     const cfg = await window.electronAPI.getConfig()
+    applyAudioCaptureFromConfig(cfg)
     vadState = {
       enabled: true,
       threshold: cfg.vad.speechThreshold,

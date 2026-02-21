@@ -8,7 +8,7 @@ import numpy as np
 asr_model = None
 vad_model = None
 punc_model = None
-asr_backend = "funasr_torch"
+asr_backend = "funasr_onnx_contextual"
 asr_hotwords_str = ""
 
 
@@ -17,7 +17,7 @@ def reset_runtime_models():
     asr_model = None
     vad_model = None
     punc_model = None
-    asr_backend = "funasr_torch"
+    asr_backend = "funasr_onnx_contextual"
     asr_hotwords_str = ""
 
 
@@ -219,7 +219,7 @@ def run_punc(text: str) -> str:
     if punc_model is None:
         return text
     try:
-        # FunASR torch: model.generate(input=...)
+        # 兼容带 generate 接口的 PUNC 实现
         if hasattr(punc_model, "generate"):
             result = punc_model.generate(input=text)
             if result and len(result) > 0:

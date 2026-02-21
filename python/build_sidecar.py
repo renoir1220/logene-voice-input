@@ -7,14 +7,37 @@ PyInstaller 打包脚本 — 将 asr_server.py 打包为平台特定目录版(si
 """
 
 import platform
+import shutil
 import subprocess
 import sys
-from importlib.util import find_spec
 from pathlib import Path
-from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "python" / "asr_server.py"
+EXCLUDED_MODULES = [
+    # Safe exclusions: these are not needed by current ONNX ASR runtime path.
+    "torch",
+    "torchaudio",
+    "tensorflow",
+    "tensorboard",
+]
+HIDDEN_IMPORTS = [
+    "funasr_onnx.paraformer_bin",
+    "funasr_onnx.vad_bin",
+    "funasr_onnx.punc_bin",
+]
+EXCLUDED_TOP_LEVEL_DIRS = [
+    "torch",
+    "torchaudio",
+    "tensorflow",
+    "tensorboard",
+]
+EXCLUDED_DIST_INFO_PREFIXES = [
+    "torch",
+    "torchaudio",
+    "tensorflow",
+    "tensorboard",
+]
 
 
 def get_platform_name() -> str:
@@ -27,19 +50,22 @@ def get_platform_name() -> str:
         return "linux"
 
 
-def get_add_data_sep() -> str:
-    return ";" if platform.system().lower() == "windows" else ":"
+def cleanup_excluded_artifacts(sidecar_dir: Path) -> None:
+    internal = sidecar_dir / "_internal"
+    if not internal.exists():
+        return
 
+    for name in EXCLUDED_TOP_LEVEL_DIRS:
+        target = internal / name
+        if target.exists():
+            print(f"清理排除目录: {target}")
+            shutil.rmtree(target, ignore_errors=True)
 
-def try_get_funasr_version_file() -> Optional[Path]:
-    spec = find_spec("funasr")
-    if not spec or not spec.origin:
-        return None
-    pkg_dir = Path(spec.origin).resolve().parent
-    version_file = pkg_dir / "version.txt"
-    if version_file.exists():
-        return version_file
-    return None
+    for prefix in EXCLUDED_DIST_INFO_PREFIXES:
+        for target in internal.glob(f"{prefix}-*.dist-info"):
+            if target.exists():
+                print(f"清理排除元数据: {target}")
+                shutil.rmtree(target, ignore_errors=True)
 
 
 def main():
@@ -58,24 +84,17 @@ def main():
         "--specpath", str(ROOT / "build"),
         "--clean",
         "--noconfirm",
-        "--hidden-import", "funasr.tokenizer.char_tokenizer",
-        "--hidden-import", "funasr.models.ct_transformer.model",
-        "--hidden-import", "funasr.models.sanm.encoder",
-        str(SCRIPT),
     ]
-
-    funasr_version = try_get_funasr_version_file()
-    if funasr_version:
-        add_data = f"{funasr_version}{get_add_data_sep()}funasr"
-        cmd.insert(-1, "--add-data")
-        cmd.insert(-1, add_data)
-        print(f"附加 funasr 数据文件: {funasr_version}")
-    else:
-        print("未找到 funasr/version.txt，跳过附加数据文件")
+    for module in HIDDEN_IMPORTS:
+        cmd.extend(["--hidden-import", module])
+    for module in EXCLUDED_MODULES:
+        cmd.extend(["--exclude-module", module])
+    cmd.append(str(SCRIPT))
 
     print(f"执行: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
     executable_name = "asr_server.exe" if platform.system().lower() == "windows" else "asr_server"
+    cleanup_excluded_artifacts(out_dir / "asr_server")
     print(f"打包完成: {out_dir / 'asr_server' / executable_name}")
 
 

@@ -6,16 +6,16 @@ ASR Sidecar 进程 — 基于 FunASR，通过 stdin/stdout JSON 协议与 Electr
   → {
       "id":1,
       "cmd":"init",
-      "modelName":"paraformer-zh",
-      "backend":"funasr_torch",
+      "modelName":"iic/speech_paraformer-large-contextual_asr_nat-zh-cn-16k-common-vocab8404-onnx",
+      "backend":"funasr_onnx_contextual",
       "quantize":false,
       "vadModelName":"iic/speech_fsmn_vad_zh-cn-16k-common-onnx",
       "vadBackend":"funasr_onnx_vad",
       "vadQuantize":true,
       "usePunc":true,
       "puncModelName":"iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
-      "puncBackend":"funasr_torch_punc",
-      "hotwords":"肉眼所见 20\\n鳞状上皮 20"
+      "puncBackend":"funasr_onnx_punc",
+      "hotwords":"肉眼所见 鳞状上皮"
     }
   ← {"id":1, "progress":30}
   ← {"id":1, "ok":true}
@@ -72,7 +72,7 @@ def handle_message(msg: dict) -> dict:
         cleanup_tmp_files()
 
         model_name = msg["modelName"]
-        backend = msg.get("backend", "funasr_torch")
+        backend = msg.get("backend", "funasr_onnx_contextual")
         quantize = bool(msg.get("quantize", False))
         hotwords = msg.get("hotwords", "")
         vad_model_name = msg.get("vadModelName", "")
@@ -80,7 +80,7 @@ def handle_message(msg: dict) -> dict:
         vad_quantize = bool(msg.get("vadQuantize", True))
         use_punc = bool(msg.get("usePunc", True))
         punc_model_name = msg.get("puncModelName", "") if use_punc else ""
-        punc_backend = msg.get("puncBackend", "funasr_torch_punc") if use_punc else ""
+        punc_backend = msg.get("puncBackend", "funasr_onnx_punc") if use_punc else ""
 
         dependencies = build_dependencies(
             model_name,
@@ -250,14 +250,14 @@ def handle_message(msg: dict) -> dict:
 
     if cmd == "check":
         model_name = msg["modelName"]
-        backend = msg.get("backend", "funasr_torch")
+        backend = msg.get("backend", "funasr_onnx_contextual")
         quantize = bool(msg.get("quantize", False))
         vad_model_name = msg.get("vadModelName", "")
         vad_backend = msg.get("vadBackend", "funasr_onnx_vad")
         vad_quantize = bool(msg.get("vadQuantize", True))
         use_punc = bool(msg.get("usePunc", True))
         punc_model_name = msg.get("puncModelName", "") if use_punc else ""
-        punc_backend = msg.get("puncBackend", "funasr_torch_punc") if use_punc else ""
+        punc_backend = msg.get("puncBackend", "funasr_onnx_punc") if use_punc else ""
 
         dependencies = build_dependencies(
             model_name,

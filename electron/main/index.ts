@@ -122,7 +122,7 @@ function createTray() {
   const icon = nativeImage.createEmpty()
   const t = new Tray(icon)
   setTray(t)
-  t.setToolTip('Logene Voice Input')
+  t.setToolTip('朗珈语音输入法')
   updateTrayMenu()
 }
 

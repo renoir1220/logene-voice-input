@@ -4,6 +4,14 @@
   box-sizing: border-box;
 }
 
+:root {
+  --brand-primary: #0ea5e9;
+  --brand-primary-strong: #0284c7;
+  --brand-accent: #38bdf8;
+  --brand-surface: #f0f9ff;
+  --text-main: #1f2937;
+}
+
 html,
 body {
   background: transparent !important;
@@ -13,8 +21,8 @@ body {
   -webkit-user-select: none;
   height: 100%;
   width: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
-  color: #334155;
+  font-family: "SF Pro Display", "Avenir Next", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  color: var(--text-main);
 }
 
 #app {
@@ -36,4 +44,3 @@ body {
   display: flex;
   flex-direction: column;
 }
-

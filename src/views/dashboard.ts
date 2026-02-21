@@ -30,6 +30,7 @@ import {
   clearLogViewCache,
   setModelListHint,
 } from '../dashboard-models'
+import { initFirstUseOnboarding } from './onboarding'
 
 import { marked } from 'marked'
 import type { RecognitionRecord } from '../types'
@@ -157,6 +158,7 @@ export function initDashboardUI() {
 
   initTabs()
   loadConfigToForm()
+  void initFirstUseOnboarding()
   renderCommandEditor()
   loadHotwords()
   loadLogs()

@@ -27,20 +27,6 @@ vi.mock('../../electron/main/model-manager', () => ({
   isHotwordCapableModel: (model: { hotwordFormat?: string }) => model.hotwordFormat !== 'none',
   MODELS: [
     {
-      id: 'paraformer-zh',
-      name: 'Paraformer 中文 (标准)',
-      funasrModel: 'paraformer-zh',
-      description: '标准中文模型，VAD+标点，支持热词',
-      size: '~1 GB',
-      backend: 'funasr_torch',
-      hotwordFormat: 'weighted-lines',
-      vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
-      vadBackend: 'funasr_onnx_vad',
-      vadQuantized: true,
-      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-      puncBackend: 'funasr_torch_punc',
-    },
-    {
       id: 'paraformer-zh-contextual-quant',
       name: 'Paraformer 中文 (量化+热词)',
       funasrModel: 'iic/speech_paraformer-large-contextual_asr_nat-zh-cn-16k-common-vocab8404-onnx',
@@ -53,21 +39,7 @@ vi.mock('../../electron/main/model-manager', () => ({
       vadBackend: 'funasr_onnx_vad',
       vadQuantized: true,
       puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-      puncBackend: 'funasr_torch_punc',
-    },
-    {
-      id: 'sensevoice-small',
-      name: 'SenseVoice (小)',
-      funasrModel: 'iic/SenseVoiceSmall',
-      description: '多语言模型，支持热词',
-      size: '~450 MB',
-      backend: 'funasr_torch',
-      hotwordFormat: 'weighted-lines',
-      vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
-      vadBackend: 'funasr_onnx_vad',
-      vadQuantized: true,
-      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-      puncBackend: 'funasr_torch_punc',
+      puncBackend: 'funasr_onnx_punc',
     },
   ],
 }))
@@ -131,7 +103,7 @@ describe('local-asr (sidecar + FunASR)', () => {
   it('initLocalRecognizer 启动 sidecar 并发送 init（含 modelName 和 hotwords）', async () => {
     const { initLocalRecognizer } = await import('../../electron/main/local-asr')
 
-    const initPromise = initLocalRecognizer('paraformer-zh')
+    const initPromise = initLocalRecognizer('paraformer-zh-contextual-quant')
 
     // 模拟 sidecar 就绪
     await new Promise(r => setTimeout(r, 10))
@@ -142,12 +114,12 @@ describe('local-asr (sidecar + FunASR)', () => {
     const writeCall = mockProc.stdin.write.mock.calls[0][0]
     const req = JSON.parse(writeCall)
     expect(req.cmd).toBe('init')
-    expect(req.modelName).toBe('paraformer-zh')
+    expect(req.modelName).toBe('iic/speech_paraformer-large-contextual_asr_nat-zh-cn-16k-common-vocab8404-onnx')
     expect(req.vadModelName).toBe('iic/speech_fsmn_vad_zh-cn-16k-common-onnx')
     expect(req.vadBackend).toBe('funasr_onnx_vad')
     expect(req.vadQuantize).toBe(true)
     expect(req.puncModelName).toBe('iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch')
-    expect(req.puncBackend).toBe('funasr_torch_punc')
+    expect(req.puncBackend).toBe('funasr_onnx_punc')
     // 所有模型都传热词
     expect(req.hotwords).toContain('肉眼所见')
     expect(req.hotwords).toContain('鳞状上皮')
@@ -157,30 +129,6 @@ describe('local-asr (sidecar + FunASR)', () => {
     await initPromise
 
     expect(spawnMock).toHaveBeenCalledOnce()
-  })
-
-  it('sensevoice 模型同样传递热词', async () => {
-    const { initLocalRecognizer } = await import('../../electron/main/local-asr')
-
-    const initPromise = initLocalRecognizer('sensevoice-small')
-
-    await new Promise(r => setTimeout(r, 10))
-    mockProc._emit('stdout', '{"ready":true}')
-
-    await new Promise(r => setTimeout(r, 10))
-    const writeCall = mockProc.stdin.write.mock.calls[0][0]
-    const req = JSON.parse(writeCall)
-    expect(req.cmd).toBe('init')
-    expect(req.modelName).toBe('iic/SenseVoiceSmall')
-    expect(req.vadModelName).toBe('iic/speech_fsmn_vad_zh-cn-16k-common-onnx')
-    expect(req.vadBackend).toBe('funasr_onnx_vad')
-    expect(req.vadQuantize).toBe(true)
-    expect(req.puncModelName).toBe('iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch')
-    expect(req.puncBackend).toBe('funasr_torch_punc')
-    expect(req.hotwords).toContain('肉眼所见')
-    mockProc._emit('stdout', JSON.stringify({ id: req.id, ok: true }))
-
-    await initPromise
   })
 
   it('量化+热词 ONNX 模型应传递空格分隔热词', async () => {
@@ -200,7 +148,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     expect(req.quantize).toBe(true)
     expect(req.vadBackend).toBe('funasr_onnx_vad')
     expect(req.vadQuantize).toBe(true)
-    expect(req.puncBackend).toBe('funasr_torch_punc')
+    expect(req.puncBackend).toBe('funasr_onnx_punc')
     expect(req.hotwords).toContain('肉眼所见')
     expect(req.hotwords).toContain('鳞状上皮')
     expect(req.hotwords).toContain('萎缩性胃炎')
@@ -219,7 +167,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     } as any)
 
     const { initLocalRecognizer, checkModelStatus } = await import('../../electron/main/local-asr')
-    const initPromise = initLocalRecognizer('paraformer-zh')
+    const initPromise = initLocalRecognizer('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
     await new Promise(r => setTimeout(r, 10))
@@ -230,7 +178,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     mockProc._emit('stdout', JSON.stringify({ id: initReq.id, ok: true }))
     await initPromise
 
-    const checkPromise = checkModelStatus('paraformer-zh')
+    const checkPromise = checkModelStatus('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     const checkReq = JSON.parse(mockProc.stdin.write.mock.calls[1][0])
     expect(checkReq.cmd).toBe('check')
@@ -245,7 +193,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     const { initLocalRecognizer, recognizeLocal } = await import('../../electron/main/local-asr')
 
     // 先初始化
-    const initPromise = initLocalRecognizer('paraformer-zh')
+    const initPromise = initLocalRecognizer('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
     await new Promise(r => setTimeout(r, 10))
@@ -305,13 +253,13 @@ describe('local-asr (sidecar + FunASR)', () => {
       funasrModel: 'iic/no-hotword',
       description: '测试模型',
       size: '~1 MB',
-      backend: 'funasr_torch',
+      backend: 'funasr_onnx_contextual',
       hotwordFormat: 'none',
       vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
       vadBackend: 'funasr_onnx_vad',
       vadQuantized: true,
       puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-      puncBackend: 'funasr_torch_punc',
+      puncBackend: 'funasr_onnx_punc',
     })
     try {
       const { initLocalRecognizer } = await import('../../electron/main/local-asr')
@@ -325,7 +273,7 @@ describe('local-asr (sidecar + FunASR)', () => {
   it('sidecar 崩溃时拒绝等待中的请求', async () => {
     const { initLocalRecognizer } = await import('../../electron/main/local-asr')
 
-    const initPromise = initLocalRecognizer('paraformer-zh')
+    const initPromise = initLocalRecognizer('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
     await new Promise(r => setTimeout(r, 10))
@@ -353,7 +301,7 @@ describe('local-asr (sidecar + FunASR)', () => {
   it('sidecar 结构化错误应透传 code/phase 摘要', async () => {
     const { initLocalRecognizer } = await import('../../electron/main/local-asr')
 
-    const initPromise = initLocalRecognizer('paraformer-zh')
+    const initPromise = initLocalRecognizer('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
     await new Promise(r => setTimeout(r, 10))
@@ -377,7 +325,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     const { initLocalRecognizer } = await import('../../electron/main/local-asr')
 
     // 第一次初始化
-    const p1 = initLocalRecognizer('paraformer-zh')
+    const p1 = initLocalRecognizer('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
     await new Promise(r => setTimeout(r, 10))
@@ -386,7 +334,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     await p1
 
     // 第二次初始化同一模型
-    await initLocalRecognizer('paraformer-zh')
+    await initLocalRecognizer('paraformer-zh-contextual-quant')
 
     // stdin.write 只被调用一次（init 命令）
     expect(mockProc.stdin.write).toHaveBeenCalledTimes(1)
@@ -395,7 +343,7 @@ describe('local-asr (sidecar + FunASR)', () => {
   it('checkModelDownloaded 通过 sidecar check 命令查询', async () => {
     const { checkModelDownloaded } = await import('../../electron/main/local-asr')
 
-    const checkPromise = checkModelDownloaded('paraformer-zh')
+    const checkPromise = checkModelDownloaded('paraformer-zh-contextual-quant')
 
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
@@ -404,12 +352,12 @@ describe('local-asr (sidecar + FunASR)', () => {
     const writeCall = mockProc.stdin.write.mock.calls[0][0]
     const req = JSON.parse(writeCall)
     expect(req.cmd).toBe('check')
-    expect(req.modelName).toBe('paraformer-zh')
+    expect(req.modelName).toBe('iic/speech_paraformer-large-contextual_asr_nat-zh-cn-16k-common-vocab8404-onnx')
     expect(req.vadModelName).toBe('iic/speech_fsmn_vad_zh-cn-16k-common-onnx')
     expect(req.vadBackend).toBe('funasr_onnx_vad')
     expect(req.vadQuantize).toBe(true)
     expect(req.puncModelName).toBe('iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch')
-    expect(req.puncBackend).toBe('funasr_torch_punc')
+    expect(req.puncBackend).toBe('funasr_onnx_punc')
     mockProc._emit('stdout', JSON.stringify({ id: req.id, ok: true, downloaded: true }))
 
     const result = await checkPromise
@@ -419,7 +367,7 @@ describe('local-asr (sidecar + FunASR)', () => {
   it('checkModelStatus 返回完整性详情', async () => {
     const { checkModelStatus } = await import('../../electron/main/local-asr')
 
-    const checkPromise = checkModelStatus('paraformer-zh')
+    const checkPromise = checkModelStatus('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
     await new Promise(r => setTimeout(r, 10))
@@ -433,8 +381,8 @@ describe('local-asr (sidecar + FunASR)', () => {
       dependencies: [
         {
           role: 'ASR',
-          modelName: 'paraformer-zh',
-          backend: 'funasr_torch',
+          modelName: 'iic/speech_paraformer-large-contextual_asr_nat-zh-cn-16k-common-vocab8404-onnx',
+          backend: 'funasr_onnx_contextual',
           quantize: false,
           cached: true,
           complete: false,
@@ -452,7 +400,7 @@ describe('local-asr (sidecar + FunASR)', () => {
   it('recognizeLocal 在 sidecar 返回错误时应抛出异常', async () => {
     const { initLocalRecognizer, recognizeLocal } = await import('../../electron/main/local-asr')
 
-    const initPromise = initLocalRecognizer('paraformer-zh')
+    const initPromise = initLocalRecognizer('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
     await new Promise(r => setTimeout(r, 10))
@@ -472,7 +420,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     vi.useFakeTimers()
     const { initLocalRecognizer, recognizeLocal } = await import('../../electron/main/local-asr')
 
-    const initPromise = initLocalRecognizer('paraformer-zh')
+    const initPromise = initLocalRecognizer('paraformer-zh-contextual-quant')
     await vi.advanceTimersByTimeAsync(20)
     mockProc._emit('stdout', '{"ready":true}')
     await vi.advanceTimersByTimeAsync(20)
@@ -493,7 +441,7 @@ describe('local-asr (sidecar + FunASR)', () => {
   it('disposeLocalRecognizer 发送 dispose 并杀掉进程', async () => {
     const { initLocalRecognizer, disposeLocalRecognizer } = await import('../../electron/main/local-asr')
 
-    const p = initLocalRecognizer('paraformer-zh')
+    const p = initLocalRecognizer('paraformer-zh-contextual-quant')
     await new Promise(r => setTimeout(r, 10))
     mockProc._emit('stdout', '{"ready":true}')
     await new Promise(r => setTimeout(r, 10))

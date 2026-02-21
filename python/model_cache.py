@@ -16,7 +16,6 @@ _hotword_tmp: Optional[str] = None
 def resolve_model_id(model_name: str) -> str:
     """将 FunASR 短名解析为 ModelScope model_id"""
     funasr_map = {
-        "paraformer-zh": "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
         "ct-punc": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
     }
     return funasr_map.get(model_name, model_name)

@@ -2,10 +2,10 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
-export type AsrBackend = 'funasr_torch' | 'funasr_onnx_contextual' | 'funasr_onnx_paraformer'
-export type HotwordFormat = 'weighted-lines' | 'space-separated' | 'none'
+export type AsrBackend = 'funasr_onnx_contextual' | 'funasr_onnx_paraformer'
+export type HotwordFormat = 'space-separated' | 'none'
 export type VadBackend = 'funasr_onnx_vad'
-export type PuncBackend = 'funasr_torch_punc' | 'funasr_onnx_punc'
+export type PuncBackend = 'funasr_onnx_punc'
 
 // 模型定义
 export interface ModelInfo {
@@ -49,7 +49,6 @@ export function isHotwordCapableModel(model: ModelInfo): boolean {
 }
 
 const FUNASR_MODEL_ID_MAP: Record<string, string> = {
-  'paraformer-zh': 'iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch',
   'ct-punc': 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
 }
 
@@ -172,20 +171,6 @@ export function inspectLocalModelStatus(model: ModelInfo): ModelCheckStatus {
 // 本地模型列表
 export const MODELS: ModelInfo[] = [
   {
-    id: 'paraformer-zh',
-    name: 'Paraformer 中文 (标准)',
-    funasrModel: 'paraformer-zh',
-    description: '标准中文模型，VAD+标点，支持热词',
-    size: '~1 GB',
-    backend: 'funasr_torch',
-    hotwordFormat: 'weighted-lines',
-    vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
-    vadBackend: 'funasr_onnx_vad',
-    vadQuantized: true,
-    puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-    puncBackend: 'funasr_onnx_punc',
-  },
-  {
     id: 'paraformer-zh-contextual-quant',
     name: 'Paraformer 中文 (量化+热词)',
     funasrModel: 'iic/speech_paraformer-large-contextual_asr_nat-zh-cn-16k-common-vocab8404-onnx',
@@ -194,20 +179,6 @@ export const MODELS: ModelInfo[] = [
     backend: 'funasr_onnx_contextual',
     hotwordFormat: 'space-separated',
     quantized: true,
-    vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
-    vadBackend: 'funasr_onnx_vad',
-    vadQuantized: true,
-    puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-    puncBackend: 'funasr_onnx_punc',
-  },
-  {
-    id: 'sensevoice-small',
-    name: 'SenseVoice (小)',
-    funasrModel: 'iic/SenseVoiceSmall',
-    description: '多语言模型，支持热词',
-    size: '~450 MB',
-    backend: 'funasr_torch',
-    hotwordFormat: 'weighted-lines',
     vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
     vadBackend: 'funasr_onnx_vad',
     vadQuantized: true,
