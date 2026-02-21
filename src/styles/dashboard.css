@@ -506,6 +506,29 @@ input:checked+.slider:before {
   padding: 8px 14px;
 }
 
+.text-rules-editor-list {
+  gap: 10px;
+}
+
+.text-rule-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(180px, 1.4fr) minmax(160px, 1.2fr) 88px auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.text-rule-row .cmd-input {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.text-rule-row .checkbox {
+  white-space: nowrap;
+}
+
 .llm-task-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));
@@ -588,8 +611,14 @@ input:checked+.slider:before {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
   }
 
+  .text-rule-row {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+
   .llm-model-row .checkbox,
-  .llm-model-row .cmd-del-btn {
+  .llm-model-row .cmd-del-btn,
+  .text-rule-row .checkbox,
+  .text-rule-row .cmd-del-btn {
     justify-self: start;
   }
 }

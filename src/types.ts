@@ -64,6 +64,25 @@ export interface HotwordScene {
   words: string[]
 }
 
+export interface SizeExpressionRuleOptions {
+  multiplicationWords: string[]
+  rangeWords: string[]
+  outputUnit: string
+}
+
+export interface TextRuleConfig {
+  id: string
+  name: string
+  enabled: boolean
+  type: 'sizeExpressionNormalize'
+  options: SizeExpressionRuleOptions
+}
+
+export interface TextRulesConfig {
+  enabled: boolean
+  rules: TextRuleConfig[]
+}
+
 export interface ModelStatus {
   id: string
   name: string
@@ -142,6 +161,7 @@ export interface AppConfig {
   vad: { enabled: boolean; speechThreshold: number; silenceTimeoutMs: number; minSpeechDurationMs: number }
   voiceCommands: Record<string, string>
   hotwords: HotwordScene[]
+  textRules: TextRulesConfig
   asr: { mode: 'api' | 'local'; localModel: string; puncEnabled: boolean }
   llm: LlmConfig
   logging: { enableDebug: boolean }

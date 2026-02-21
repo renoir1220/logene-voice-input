@@ -7,7 +7,7 @@ import { getModelInfoList, inspectLocalModelStatus } from './model-manager'
 import { logger, getLogBuffer, clearLogs } from './logger'
 import { matchVoiceCommand } from './voice-commands'
 import { typeText, sendShortcut } from './input-sim'
-import { normalizeAsrText } from './asr-text'
+import { normalizeAsrText, applyTextRules } from './asr-text'
 import { optimizeAsrTextWithLlm, generateDailySummary } from './llm-service'
 import { FocusController } from './focus-controller'
 import { insertRecognition, getStats, getRecentHistory, getAllHistory, getRecordsByDate } from './db'
@@ -182,6 +182,11 @@ export function setupIpc(
       vad: { ...current.vad, ...cfg.vad, enabled: vadEnabled },
       voiceCommands: cfg.voiceCommands ?? current.voiceCommands,
       hotwords: cfg.hotwords ?? current.hotwords,
+      textRules: cfg.textRules ? {
+        ...current.textRules,
+        ...cfg.textRules,
+        rules: Array.isArray(cfg.textRules.rules) ? cfg.textRules.rules : current.textRules.rules,
+      } : current.textRules,
       asr: { ...current.asr, ...cfg.asr },
       logging: { ...current.logging, ...cfg.logging },
       llm: cfg.llm ? {
@@ -317,15 +322,25 @@ export function setupIpc(
       throw e
     }
 
-    const text = normalizeAsrText(rawText)
+    const normalizedText = normalizeAsrText(rawText)
+    const text = applyTextRules(normalizedText, cfg.textRules)
     logger.info(`[ASR#${reqId}] 识别结果: "${text}"`)
     if (!text.trim()) return ''
 
     const result = matchVoiceCommand(text, cfg.voiceCommands)
+    const selfFrontmost = await focusController.isSelfAppFrontmost(`asr#${reqId}`)
     const fallbackTarget = focusController.getLastExternalAppId()
     const focusTarget = prevAppId || fallbackTarget
-    logger.debug(`[ASR#${reqId}] focus target prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'} chosen=${focusTarget ?? 'null'}`)
-    await focusController.restore(focusTarget, `asr#${reqId}`)
+    if (selfFrontmost) {
+      logger.debug(
+        `[ASR#${reqId}] skip restore because self app is frontmost prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'}`,
+      )
+    } else {
+      logger.debug(
+        `[ASR#${reqId}] focus target prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'} chosen=${focusTarget ?? 'null'}`,
+      )
+      await focusController.restore(focusTarget, `asr#${reqId}`)
+    }
 
     if (result.type === 'command') {
       logger.info(`[ASR#${reqId}] 语音指令: ${text.trim()} → ${result.shortcut}`)

@@ -1,4 +1,11 @@
-import type { HotwordScene, AppConfig, LlmModelConfig, LlmTaskPromptConfig } from './types'
+import type {
+  HotwordScene,
+  AppConfig,
+  LlmModelConfig,
+  LlmTaskPromptConfig,
+  TextRuleConfig,
+  TextRulesConfig,
+} from './types'
 import { renderModelList, setModelListHint } from './dashboard-models'
 import { withTimeout } from './utils'
 
@@ -68,6 +75,29 @@ function collectLlmModelsFromForm(): LlmModelConfig[] {
   })
 
   return models
+}
+
+function textRuleContainer(): HTMLDivElement | null {
+  return document.getElementById('text-rules-editor-list') as HTMLDivElement | null
+}
+
+function parseRuleTokenList(raw: string): string[] {
+  const parts = raw
+    .split(/[\n,，、]+/u)
+    .map((p) => p.trim())
+    .filter(Boolean)
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const token of parts) {
+    if (seen.has(token)) continue
+    seen.add(token)
+    result.push(token)
+  }
+  return result
+}
+
+function renderRuleTokenList(tokens: string[] | undefined): string {
+  return Array.isArray(tokens) ? tokens.join('，') : ''
 }
 
 function renderTaskBindings(models: LlmModelConfig[], bindings?: { rewrite?: string; asrPostProcess?: string; dailySummary?: string }) {
@@ -151,6 +181,145 @@ function collectTaskPromptsFromForm(existing: AppConfig['llm']['prompts']): AppC
     asrPostProcess: readTask('asr', existing.asrPostProcess),
     dailySummary: readTask('summary', existing.dailySummary),
   }
+}
+
+function appendTextRuleRow(rule: TextRuleConfig, refreshHint = false) {
+  const container = textRuleContainer()
+  if (!container) return
+
+  const row = document.createElement('div')
+  row.className = 'text-rule-row cmd-editor-row'
+  row.dataset.ruleId = rule.id
+
+  const nameInput = document.createElement('input')
+  nameInput.type = 'text'
+  nameInput.className = 'cmd-input text-rule-name'
+  nameInput.placeholder = '规则名称'
+  nameInput.value = rule.name
+
+  const mulInput = document.createElement('input')
+  mulInput.type = 'text'
+  mulInput.className = 'cmd-input text-rule-mul'
+  mulInput.placeholder = '乘法连接词（逗号分隔）'
+  mulInput.value = renderRuleTokenList(rule.options.multiplicationWords)
+
+  const rangeInput = document.createElement('input')
+  rangeInput.type = 'text'
+  rangeInput.className = 'cmd-input text-rule-range'
+  rangeInput.placeholder = '范围连接词（逗号分隔）'
+  rangeInput.value = renderRuleTokenList(rule.options.rangeWords)
+
+  const unitInput = document.createElement('input')
+  unitInput.type = 'text'
+  unitInput.className = 'cmd-input text-rule-unit'
+  unitInput.placeholder = '输出单位'
+  unitInput.value = rule.options.outputUnit || 'CM'
+
+  const enabledLabel = document.createElement('label')
+  enabledLabel.className = 'checkbox'
+  const enabledInput = document.createElement('input')
+  enabledInput.className = 'text-rule-enabled'
+  enabledInput.type = 'checkbox'
+  enabledInput.checked = rule.enabled
+  const enabledText = document.createElement('span')
+  enabledText.textContent = '启用'
+  enabledLabel.appendChild(enabledInput)
+  enabledLabel.appendChild(enabledText)
+
+  const delBtn = document.createElement('button')
+  delBtn.className = 'cmd-del-btn text-rule-del-btn'
+  delBtn.type = 'button'
+  delBtn.textContent = '×'
+  delBtn.title = '删除规则'
+  delBtn.addEventListener('click', () => {
+    row.remove()
+  })
+
+  row.append(nameInput, mulInput, rangeInput, unitInput, enabledLabel, delBtn)
+  container.appendChild(row)
+
+  if (refreshHint) {
+    const hint = document.getElementById('text-rules-save-hint')
+    if (hint) {
+      hint.textContent = '请点击“保存文本规则”应用改动'
+      hint.style.color = '#94a3b8'
+    }
+  }
+}
+
+function renderTextRulesEditor(config: TextRulesConfig | undefined) {
+  const container = textRuleContainer()
+  if (!container) return
+
+  const enabledInput = document.getElementById('cfg-text-rules-enabled') as HTMLInputElement | null
+  if (enabledInput) {
+    enabledInput.checked = Boolean(config?.enabled)
+  }
+
+  container.innerHTML = ''
+  const rules = Array.isArray(config?.rules) ? config!.rules : []
+  for (const rule of rules) {
+    appendTextRuleRow(rule)
+  }
+}
+
+function collectTextRulesFromForm(existing: TextRulesConfig): TextRulesConfig {
+  const enabled = (document.getElementById('cfg-text-rules-enabled') as HTMLInputElement | null)?.checked ?? false
+  const container = textRuleContainer()
+  if (!container) return existing
+
+  const rows = Array.from(container.querySelectorAll<HTMLDivElement>('.text-rule-row'))
+  const rules: TextRuleConfig[] = rows.map((row, index) => {
+    const fallback = existing.rules[index] || existing.rules[0]
+    const rawId = row.dataset.ruleId || ''
+    const name = (row.querySelector('.text-rule-name') as HTMLInputElement | null)?.value.trim() || `规则${index + 1}`
+    const multiplicationWords = parseRuleTokenList(
+      (row.querySelector('.text-rule-mul') as HTMLInputElement | null)?.value || '',
+    )
+    const rangeWords = parseRuleTokenList(
+      (row.querySelector('.text-rule-range') as HTMLInputElement | null)?.value || '',
+    )
+    const outputUnit = (row.querySelector('.text-rule-unit') as HTMLInputElement | null)?.value.trim().toUpperCase() || 'CM'
+    const enabledRule = (row.querySelector('.text-rule-enabled') as HTMLInputElement | null)?.checked ?? true
+
+    return {
+      id: rawId || `text-rule-${index + 1}`,
+      name,
+      enabled: enabledRule,
+      type: 'sizeExpressionNormalize',
+      options: {
+        multiplicationWords: multiplicationWords.length > 0
+          ? multiplicationWords
+          : [...(fallback?.options.multiplicationWords ?? ['乘以', '乘', 'x', 'X', '×', '*'])],
+        rangeWords: rangeWords.length > 0
+          ? rangeWords
+          : [...(fallback?.options.rangeWords ?? ['到', '至', '-', '~', '～', '—', '－'])],
+        outputUnit: outputUnit || (fallback?.options.outputUnit ?? 'CM'),
+      },
+    }
+  })
+
+  return {
+    enabled,
+    rules,
+  }
+}
+
+export function addTextRule() {
+  const container = textRuleContainer()
+  if (!container) return
+  const nextIndex = container.querySelectorAll('.text-rule-row').length + 1
+  appendTextRuleRow({
+    id: `text-rule-${nextIndex}`,
+    name: `尺寸规则${nextIndex}`,
+    enabled: true,
+    type: 'sizeExpressionNormalize',
+    options: {
+      multiplicationWords: ['乘以', '乘', 'x', 'X', '×', '*'],
+      rangeWords: ['到', '至', '-', '~', '～', '—', '－'],
+      outputUnit: 'CM',
+    },
+  }, true)
 }
 
 function appendLlmModelRow(model: LlmModelConfig, refreshBindings: boolean) {
@@ -268,6 +437,7 @@ export async function loadConfigToForm() {
         : false
     renderLlmModelRows(cfg.llm?.models || [], cfg.llm?.taskBindings)
     renderTaskPrompts(cfg.llm.prompts)
+    renderTextRulesEditor(cfg.textRules)
     const asrMode = cfg.asr?.mode ?? 'api'
     ;(document.getElementById('cfg-local-punc-enabled') as HTMLInputElement).checked = cfg.asr?.puncEnabled !== false
     ;(document.getElementById('asr-mode-api') as HTMLInputElement).checked = asrMode === 'api'
@@ -283,6 +453,7 @@ export async function loadConfigToForm() {
 export async function saveConfig() {
   const hint = document.getElementById('save-hint')!
   const llmHint = document.getElementById('llm-save-hint')
+  const textRulesHint = document.getElementById('text-rules-save-hint')
   try {
     const cfg = await window.electronAPI.getConfig()
     const prevHotkey = normalizeHotkey(cfg.hotkey?.record || '')
@@ -317,12 +488,17 @@ export async function saveConfig() {
       },
       prompts: collectTaskPromptsFromForm(cfg.llm.prompts),
     }
+    cfg.textRules = collectTextRulesFromForm(cfg.textRules)
     await window.electronAPI.saveConfig(cfg)
     hint.textContent = needsRestart ? '已保存，热键变更需重启后生效' : '已保存'
     hint.style.color = '#4ade80'
     if (llmHint) {
       llmHint.textContent = '应用已持久化'
       llmHint.style.color = '#4ade80'
+    }
+    if (textRulesHint) {
+      textRulesHint.textContent = '文本规则已保存'
+      textRulesHint.style.color = '#4ade80'
     }
     if (needsRestart) {
       const shouldRestart = window.confirm('热键配置已变更，需要重启应用后生效。现在重启吗？')
@@ -336,6 +512,10 @@ export async function saveConfig() {
     if (llmHint) {
       llmHint.textContent = '保存失败'
       llmHint.style.color = '#f87171'
+    }
+    if (textRulesHint) {
+      textRulesHint.textContent = '保存失败'
+      textRulesHint.style.color = '#f87171'
     }
   }
 }

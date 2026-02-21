@@ -18,6 +18,7 @@ import {
   renderHotwordTags,
   saveHotwords,
   addLlmModel,
+  addTextRule,
   updateAsrModeUI,
   setHotwordSearchQuery,
 } from '../dashboard-config'
@@ -42,8 +43,10 @@ export function initDashboardUI() {
   const dashboardVadToggle = document.getElementById('dashboard-vad-toggle') as HTMLInputElement | null
 
   document.getElementById('save-btn')!.addEventListener('click', saveConfig)
+  document.getElementById('save-text-rules-btn')?.addEventListener('click', saveConfig)
   document.getElementById('llm-save-btn')?.addEventListener('click', saveConfig)
   document.getElementById('llm-add-model-btn')?.addEventListener('click', addLlmModel)
+  document.getElementById('add-text-rule-btn')?.addEventListener('click', addTextRule)
 
   // 二级 tab 切换
   document.querySelectorAll<HTMLButtonElement>('.sub-tab').forEach(btn => {

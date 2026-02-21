@@ -180,6 +180,17 @@ export class FocusController {
     logger.warn(`[Focus] restore exhausted reason=${reason} target=${target}`)
   }
 
+  async isSelfAppFrontmost(reason = 'unknown'): Promise<boolean> {
+    const current = await this.getCurrentFrontmost()
+    const frontmostIsSelf = Boolean(current && this.options.isSelfAppId(current))
+    if (this.debugTrace) {
+      logger.debug(
+        `[Focus] is-self-frontmost reason=${reason} current=${current ?? 'null'} result=${frontmostIsSelf}`,
+      )
+    }
+    return frontmostIsSelf
+  }
+
   private async getCurrentFrontmost(): Promise<string | null> {
     try {
       const appId = await getFrontmostApp()

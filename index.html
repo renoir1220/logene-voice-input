@@ -117,6 +117,7 @@
               <button class="sub-tab active" data-subtab="settings-basic">基本设置</button>
               <button class="sub-tab" data-subtab="settings-commands">语音指令</button>
               <button class="sub-tab" data-subtab="settings-hotwords">热词管理</button>
+              <button class="sub-tab" data-subtab="settings-text-rules">文本规则</button>
             </div>
 
             <!-- 子页：基本设置 -->
@@ -184,6 +185,29 @@
               <div class="actions-row">
                 <div id="hotword-save-hint" class="save-hint"></div>
                 <button id="save-hotwords-btn" class="btn btn-primary">保存热词</button>
+              </div>
+            </div>
+
+            <!-- 子页：文本规则 -->
+            <div id="subtab-settings-text-rules" class="sub-tab-pane">
+              <p class="desc">对 ASR 文本执行可配置的规则化处理（不依赖 LLM）。可用于尺寸表达统一，如“十六厘米乘以十二厘米”→“16CM×12CM”。</p>
+              <div class="card">
+                <div class="form-group row-group">
+                  <label class="checkbox">
+                    <input id="cfg-text-rules-enabled" type="checkbox" />
+                    <span>启用文本规则引擎</span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label>规则列表（按顺序执行）</label>
+                  <div id="text-rules-editor-list" class="cmd-editor-list text-rules-editor-list"></div>
+                  <button id="add-text-rule-btn" class="btn btn-outline" type="button">+ 新增规则</button>
+                  <span class="tip">连接词支持逗号分隔，如：乘以，乘，x，×。范围词如：到，至，-。</span>
+                </div>
+              </div>
+              <div class="actions-row">
+                <div id="text-rules-save-hint" class="save-hint"></div>
+                <button id="save-text-rules-btn" class="btn btn-primary">保存文本规则</button>
               </div>
             </div>
           </div>

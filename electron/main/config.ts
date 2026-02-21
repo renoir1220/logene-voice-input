@@ -8,6 +8,42 @@ export interface HotwordScene {
   words: string[]
 }
 
+export interface SizeExpressionRuleOptions {
+  multiplicationWords: string[]
+  rangeWords: string[]
+  outputUnit: string
+}
+
+export interface TextRuleConfig {
+  id: string
+  name: string
+  enabled: boolean
+  type: 'sizeExpressionNormalize'
+  options: SizeExpressionRuleOptions
+}
+
+export interface TextRulesConfig {
+  enabled: boolean
+  rules: TextRuleConfig[]
+}
+
+export const DEFAULT_TEXT_RULES: TextRulesConfig = {
+  enabled: true,
+  rules: [
+    {
+      id: 'size-normalize-default',
+      name: '尺寸表达标准化',
+      enabled: true,
+      type: 'sizeExpressionNormalize',
+      options: {
+        multiplicationWords: ['乘以', '乘', 'x', 'X', '×', '*'],
+        rangeWords: ['到', '至', '-', '~', '～', '—', '－'],
+        outputUnit: 'CM',
+      },
+    },
+  ],
+}
+
 export interface LlmModelConfig {
   id: string
   name: string
@@ -106,6 +142,7 @@ export interface AppConfig {
   }
   voiceCommands: Record<string, string>
   hotwords: HotwordScene[]
+  textRules: TextRulesConfig
   asr: {
     mode: 'api' | 'local'    // 识别模式：远程 API 或本地模型
     localModel: string        // 本地模型标识，如 'paraformer-zh'
@@ -152,6 +189,7 @@ const defaultConfig: AppConfig = {
       '结节状', '息肉状', '乳头状', '菜花状',
     ],
   }],
+  textRules: cloneTextRulesConfig(),
   asr: { mode: 'api', localModel: 'paraformer-zh-contextual-quant', puncEnabled: true },
   llm: {
     enabled: true,
@@ -187,6 +225,7 @@ const store = new Store<AppConfig>({
 export function getConfig(): AppConfig {
   const cfg = store.store as AppConfig
   cfg.llm = normalizeLlmConfig(cfg.llm as unknown)
+  cfg.textRules = normalizeTextRulesConfig(cfg.textRules as unknown)
   if (!cfg.asr || typeof cfg.asr !== 'object') {
     cfg.asr = { ...defaultConfig.asr }
   }
@@ -211,6 +250,7 @@ export function getConfig(): AppConfig {
 
 export function saveConfig(config: AppConfig): void {
   config.llm = normalizeLlmConfig(config.llm as unknown)
+  config.textRules = normalizeTextRulesConfig(config.textRules as unknown)
   if (!config.asr || typeof config.asr !== 'object') {
     config.asr = { ...defaultConfig.asr }
   }
@@ -224,6 +264,73 @@ export function saveConfig(config: AppConfig): void {
     config.logging.enableDebug = false
   }
   store.store = config
+}
+
+function cloneTextRulesConfig(source: TextRulesConfig = DEFAULT_TEXT_RULES): TextRulesConfig {
+  return {
+    enabled: Boolean(source.enabled),
+    rules: Array.isArray(source.rules)
+      ? source.rules.map((rule) => ({
+        id: rule.id,
+        name: rule.name,
+        enabled: Boolean(rule.enabled),
+        type: 'sizeExpressionNormalize',
+        options: {
+          multiplicationWords: [...rule.options.multiplicationWords],
+          rangeWords: [...rule.options.rangeWords],
+          outputUnit: rule.options.outputUnit,
+        },
+      }))
+      : [],
+  }
+}
+
+function normalizeTokenList(raw: unknown, fallback: string[]): string[] {
+  const source = Array.isArray(raw) ? raw : []
+  const list: string[] = []
+  const seen = new Set<string>()
+  for (const token of source) {
+    if (typeof token !== 'string') continue
+    const value = token.trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    list.push(value)
+  }
+  return list.length > 0 ? list : [...fallback]
+}
+
+function normalizeSingleTextRule(raw: unknown, index: number): TextRuleConfig {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const fallback = DEFAULT_TEXT_RULES.rules[0]
+  const optionsRaw = (source.options && typeof source.options === 'object'
+    ? source.options
+    : {}) as Record<string, unknown>
+
+  const id = typeof source.id === 'string' && source.id.trim() ? source.id.trim() : `text-rule-${index + 1}`
+  const name = typeof source.name === 'string' && source.name.trim() ? source.name.trim() : `规则${index + 1}`
+  const enabled = typeof source.enabled === 'boolean' ? source.enabled : true
+
+  return {
+    id,
+    name,
+    enabled,
+    type: 'sizeExpressionNormalize',
+    options: {
+      multiplicationWords: normalizeTokenList(optionsRaw.multiplicationWords, fallback.options.multiplicationWords),
+      rangeWords: normalizeTokenList(optionsRaw.rangeWords, fallback.options.rangeWords),
+      outputUnit: typeof optionsRaw.outputUnit === 'string' && optionsRaw.outputUnit.trim()
+        ? optionsRaw.outputUnit.trim().toUpperCase()
+        : fallback.options.outputUnit,
+    },
+  }
+}
+
+function normalizeTextRulesConfig(raw: unknown): TextRulesConfig {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const enabled = typeof source.enabled === 'boolean' ? source.enabled : DEFAULT_TEXT_RULES.enabled
+  const rulesRaw = Array.isArray(source.rules) ? source.rules : DEFAULT_TEXT_RULES.rules
+  const rules = rulesRaw.map((rule, index) => normalizeSingleTextRule(rule, index))
+  return { enabled, rules }
 }
 
 function normalizeLlmConfig(raw: unknown): LlmConfig {
