@@ -1,0 +1,379 @@
+import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent } from 'electron'
+import * as path from 'path'
+import { getConfig, saveConfig, AppConfig } from './config'
+import { recognize } from './asr'
+import { recognizeLocal, initLocalRecognizer } from './local-asr'
+import { getModelInfoList, inspectLocalModelStatus } from './model-manager'
+import { logger, getLogBuffer, clearLogs } from './logger'
+import { matchVoiceCommand } from './voice-commands'
+import { typeText, sendShortcut } from './input-sim'
+import { normalizeAsrText } from './asr-text'
+import { FocusController } from './focus-controller'
+import {
+  mainWindow,
+  dashboardWindow,
+  setDashboardWindow,
+  vadEnabled,
+  floatPos,
+  setFloatPos,
+  FLOAT_WIDTH,
+  DEFAULT_LOCAL_MODEL_ID,
+  stringifyErrorLike,
+  attachWebContentsDiagnostics,
+} from './app-context'
+
+type AsrRuntimePhase = 'idle' | 'starting' | 'ready' | 'error'
+interface AsrRuntimeStatus {
+  phase: AsrRuntimePhase
+  modelId: string | null
+  progress: number
+  message: string
+  updatedAt: string
+}
+
+let asrRuntimeStatus: AsrRuntimeStatus = {
+  phase: 'idle',
+  modelId: null,
+  progress: 0,
+  message: '',
+  updatedAt: new Date().toISOString(),
+}
+let asrRequestSeq = 0
+let localAsrInitPromise: Promise<void> | null = null
+let localAsrInitModelId: string | null = null
+
+export function emitAsrRuntimeStatus() {
+  mainWindow?.webContents.send('asr-runtime-status', asrRuntimeStatus)
+  dashboardWindow?.webContents.send('asr-runtime-status', asrRuntimeStatus)
+}
+
+function setAsrRuntimeStatus(next: Partial<AsrRuntimeStatus>) {
+  asrRuntimeStatus = {
+    ...asrRuntimeStatus,
+    ...next,
+    updatedAt: new Date().toISOString(),
+  }
+  emitAsrRuntimeStatus()
+}
+
+export async function ensureLocalRecognizerReady(reason: string): Promise<void> {
+  const cfg = getConfig()
+  const mode = cfg.asr?.mode ?? 'api'
+  if (mode !== 'local') {
+    setAsrRuntimeStatus({
+      phase: 'idle',
+      modelId: null,
+      progress: 0,
+      message: '当前为远程识别模式',
+    })
+    return
+  }
+
+  const modelId = cfg.asr?.localModel || DEFAULT_LOCAL_MODEL_ID
+  if (asrRuntimeStatus.phase === 'ready' && asrRuntimeStatus.modelId === modelId && !localAsrInitPromise) {
+    return
+  }
+
+  if (localAsrInitPromise) {
+    if (localAsrInitModelId === modelId) {
+      await localAsrInitPromise
+      return
+    }
+    try {
+      await localAsrInitPromise
+    } catch {
+      // ignore previous init failure
+    }
+  }
+
+  localAsrInitModelId = modelId
+  setAsrRuntimeStatus({
+    phase: 'starting',
+    modelId,
+    progress: 0,
+    message: '正在启动本地识别...',
+  })
+
+  localAsrInitPromise = initLocalRecognizer(modelId, (data) => {
+    const progress = typeof data.progress === 'number'
+      ? Math.max(0, Math.min(100, Math.round(data.progress)))
+      : asrRuntimeStatus.progress
+    const status = typeof data.status === 'string' && data.status.trim()
+      ? data.status.trim()
+      : `正在启动本地识别${progress > 0 ? ` (${progress}%)` : '...'}`
+    setAsrRuntimeStatus({
+      phase: 'starting',
+      modelId,
+      progress,
+      message: status,
+    })
+  })
+    .then(() => {
+      setAsrRuntimeStatus({
+        phase: 'ready',
+        modelId,
+        progress: 100,
+        message: '本地识别已就绪',
+      })
+      logger.info(`[ASR] 本地识别已就绪(model=${modelId}, reason=${reason})`)
+    })
+    .catch((e) => {
+      const detail = e instanceof Error ? e.message : String(e)
+      setAsrRuntimeStatus({
+        phase: 'error',
+        modelId,
+        progress: 0,
+        message: detail,
+      })
+      logger.error(`[ASR] 本地识别启动失败(model=${modelId}, reason=${reason}): ${detail}`)
+      throw e
+    })
+    .finally(() => {
+      localAsrInitPromise = null
+      localAsrInitModelId = null
+    })
+
+  await localAsrInitPromise
+}
+
+export function setupIpc(
+  focusController: FocusController,
+  setVadEnabledState: (enabled: boolean, emit?: boolean) => boolean,
+  updateTrayMenu: () => void,
+) {
+  const config = getConfig()
+  // vadEnabled is set externally via app-context
+
+  const handle = (
+    channel: string,
+    fn: (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>,
+  ) => {
+    ipcMain.handle(channel, async (event, ...args) => {
+      try {
+        return await fn(event, ...args)
+      } catch (e) {
+        logger.error(`[IPC:${channel}] ${stringifyErrorLike(e)}`)
+        throw e
+      }
+    })
+  }
+
+  handle('get-config', () => getConfig())
+  handle('get-frontmost-app', async () => {
+    return focusController.captureSnapshot('ipc-get-frontmost')
+  })
+  handle('capture-focus-snapshot', async (_event, reason: string | undefined) => {
+    return focusController.captureSnapshot(reason ? `ipc-capture:${reason}` : 'ipc-capture')
+  })
+  handle('restore-focus', async (_event, appId: string | null) => {
+    await focusController.restore(appId, 'ipc-restore')
+  })
+
+  handle('save-config', (_event, cfg: AppConfig) => {
+    const current = getConfig()
+    const merged: AppConfig = {
+      ...current,
+      ...cfg,
+      server: { ...current.server, ...cfg.server },
+      hotkey: { ...current.hotkey, ...cfg.hotkey },
+      input: { ...current.input, ...cfg.input },
+      vad: { ...current.vad, ...cfg.vad, enabled: vadEnabled },
+      voiceCommands: cfg.voiceCommands ?? current.voiceCommands,
+      hotwords: cfg.hotwords ?? current.hotwords,
+      asr: { ...current.asr, ...cfg.asr },
+      llm: cfg.llm ? { ...current.llm, ...cfg.llm } : current.llm,
+    }
+    saveConfig(merged)
+    updateTrayMenu()
+    if ((merged.asr?.mode ?? 'api') === 'local') {
+      void ensureLocalRecognizerReady('config-save').catch(() => { })
+    } else {
+      setAsrRuntimeStatus({
+        phase: 'idle',
+        modelId: null,
+        progress: 0,
+        message: '当前为远程识别模式',
+      })
+    }
+  })
+
+  handle('get-vad-enabled', () => vadEnabled)
+  handle('set-vad-enabled', (_event, enabled: boolean) => {
+    return setVadEnabledState(Boolean(enabled))
+  })
+
+  handle('get-asr-runtime-status', () => asrRuntimeStatus)
+
+  handle('report-renderer-error', (_event, payload: unknown) => {
+    const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
+    const kind = typeof data.kind === 'string' ? data.kind : 'unknown'
+    const message = typeof data.message === 'string' ? data.message : ''
+    const source = typeof data.source === 'string' ? data.source : ''
+    const line = typeof data.lineno === 'number' ? data.lineno : 0
+    const col = typeof data.colno === 'number' ? data.colno : 0
+    const reason = typeof data.reason === 'string' ? data.reason : ''
+    const stack = typeof data.stack === 'string' ? data.stack : ''
+
+    logger.error(
+      `[Renderer] kind=${kind} message=${message || 'unknown'} ` +
+      `source=${source || 'unknown'} line=${line} col=${col} reason=${reason || ''}`.trim(),
+    )
+    if (stack) {
+      logger.error(`[Renderer] stack: ${stack}`)
+    }
+    return true
+  })
+
+  handle('open-dashboard', () => {
+    if (dashboardWindow) {
+      if (dashboardWindow.isMinimized()) dashboardWindow.restore()
+      dashboardWindow.show()
+      dashboardWindow.focus()
+      return
+    }
+
+    const win = new BrowserWindow({
+      width: 800,
+      height: 600,
+      title: 'Logene Voice Input - 控制台',
+      webPreferences: {
+        preload: path.join(__dirname, '../preload/index.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    })
+    setDashboardWindow(win)
+    attachWebContentsDiagnostics(win, 'dashboard')
+
+    if (process.env.ELECTRON_RENDERER_URL) {
+      win.loadURL(`${process.env.ELECTRON_RENDERER_URL}#/dashboard`)
+    } else {
+      win.loadFile(path.join(__dirname, '../renderer/index.html'), { hash: 'dashboard' })
+    }
+    win.webContents.on('did-finish-load', () => {
+      emitAsrRuntimeStatus()
+    })
+
+    win.on('closed', () => {
+      setDashboardWindow(null)
+    })
+  })
+
+  handle('recognize-wav', async (_event, wavBuffer: ArrayBuffer, prevAppId: string | null) => {
+    const reqId = ++asrRequestSeq
+    const cfg = getConfig()
+    const buf = Buffer.from(wavBuffer)
+    const asrMode = cfg.asr?.mode ?? 'api'
+    logger.info(`[ASR#${reqId}] 收到 WAV，大小 ${buf.byteLength} 字节，模式: ${asrMode}`)
+
+    let rawText: unknown
+    try {
+      if (asrMode === 'local') {
+        await ensureLocalRecognizerReady(`recognize#${reqId}`)
+        rawText = await recognizeLocal(buf)
+      } else {
+        rawText = await recognize(cfg.server.url, cfg.server.asrConfigId, buf)
+      }
+    } catch (e) {
+      logger.error(`[ASR#${reqId}] 识别失败: ${e}`)
+      throw e
+    }
+
+    const text = normalizeAsrText(rawText)
+    logger.info(`[ASR#${reqId}] 识别结果: "${text}"`)
+    if (!text.trim()) return ''
+
+    const result = matchVoiceCommand(text, cfg.voiceCommands)
+    const fallbackTarget = focusController.getLastExternalAppId()
+    const focusTarget = prevAppId || fallbackTarget
+    logger.info(`[ASR#${reqId}] focus target prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'} chosen=${focusTarget ?? 'null'}`)
+    await focusController.restore(focusTarget, `asr#${reqId}`)
+
+    if (result.type === 'command') {
+      logger.info(`[ASR#${reqId}] 语音指令: ${text.trim()} → ${result.shortcut}`)
+      await sendShortcut(result.shortcut)
+      return `${text.trim()} ⌨ ${result.shortcut}`
+    } else {
+      logger.info(`[ASR#${reqId}] 输入文字: ${result.text}`)
+      await typeText(result.text)
+      return result.text
+    }
+  })
+
+  // ── 模型管理 IPC ──
+  handle('get-model-statuses', async () => {
+    const startedAt = Date.now()
+    try {
+      const models = getModelInfoList()
+      if (!Array.isArray(models) || models.length === 0) {
+        logger.warn('[Model] get-model-statuses: 模型列表为空')
+        return []
+      }
+      const results = models.map((m) => {
+        const status = inspectLocalModelStatus(m)
+        return { ...m, downloaded: status.downloaded, incomplete: status.incomplete, dependencies: status.dependencies }
+      })
+      logger.info(`[Model] get-model-statuses done: count=${results.length}, cost=${Date.now() - startedAt}ms`)
+      return results
+    } catch (e) {
+      logger.error(`[Model] get-model-statuses failed: ${e instanceof Error ? (e.stack || e.message) : String(e)}`)
+      throw e
+    }
+  })
+
+  handle('get-model-catalog', () => {
+    const startedAt = Date.now()
+    const models = getModelInfoList()
+    const result = Array.isArray(models) ? models : []
+    logger.info(`[Model] get-model-catalog done: count=${result.length}, cost=${Date.now() - startedAt}ms`)
+    return result
+  })
+
+  handle('download-model', async (_event, modelId: string) => {
+    logger.info(`准备模型: ${modelId}`)
+    const sendProgress = (data: { progress: number; status?: string }) => {
+      const msg = { modelId, percent: data.progress, status: data.status }
+      mainWindow?.webContents.send('model-download-progress', msg)
+      dashboardWindow?.webContents.send('model-download-progress', msg)
+    }
+    sendProgress({ progress: 0, status: '启动中...' })
+    try {
+      await initLocalRecognizer(modelId, sendProgress)
+      const cfg = getConfig()
+      if ((cfg.asr?.mode ?? 'api') === 'local' && (cfg.asr?.localModel ?? DEFAULT_LOCAL_MODEL_ID) === modelId) {
+        setAsrRuntimeStatus({
+          phase: 'ready',
+          modelId,
+          progress: 100,
+          message: '本地识别已就绪',
+        })
+      }
+      return { success: true }
+    } catch (e) {
+      logger.error(`模型准备失败(modelId=${modelId}): ${e instanceof Error ? (e.stack || e.message) : String(e)}`)
+      return { success: false, error: String(e) }
+    }
+  })
+
+  handle('delete-model', (_event, _modelId: string) => {
+    logger.info('FunASR 模型由 ModelScope 缓存管理，如需清理请手动删除 ~/.cache/modelscope')
+  })
+
+  // ── 日志 IPC ──
+  handle('get-logs', () => getLogBuffer())
+  handle('clear-logs', () => clearLogs())
+  handle('copy-to-clipboard', (_event, text: string) => {
+    clipboard.writeText(String(text ?? ''))
+    return true
+  })
+
+  handle('get-window-position', () => mainWindow?.getPosition() || [0, 0])
+  handle('set-window-position', (_event, x: number, y: number) => {
+    if (mainWindow) {
+      mainWindow.setPosition(Math.round(x), Math.round(y), false)
+      if (mainWindow.getSize()[0] === FLOAT_WIDTH) {
+        setFloatPos({ x: Math.round(x), y: Math.round(y) })
+      }
+    }
+  })
+}

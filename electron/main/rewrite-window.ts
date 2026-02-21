@@ -1,40 +1,13 @@
-import { BrowserWindow, screen, ipcMain, clipboard, IpcMainInvokeEvent } from 'electron'
+import { BrowserWindow, ipcMain, clipboard, IpcMainInvokeEvent } from 'electron'
 import * as path from 'path'
 import { copySelectedText, pasteClipboard } from './input-sim'
-import { restoreFocus, getFrontmostApp } from './focus'
+import { restoreFocus, getFrontmostApp } from './focus-controller'
 import { rewriteText } from './llm-service'
 import { logger } from './logger'
+import { stringifyErrorLike, attachWebContentsDiagnostics } from './app-context'
 
 let rewriteWindow: BrowserWindow | null = null
 let lastActiveAppId: string | null = null
-
-function stringifyErrorLike(value: unknown): string {
-    if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`
-    if (typeof value === 'string') return value
-    try {
-        return JSON.stringify(value)
-    } catch {
-        return String(value)
-    }
-}
-
-function attachRewriteWindowDiagnostics(win: BrowserWindow) {
-    win.webContents.on('preload-error', (_event, preloadPath, error) => {
-        logger.error(`[RewriteWindow] preload-error path=${preloadPath} err=${stringifyErrorLike(error)}`)
-    })
-    win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-        if (level < 2) return
-        const text = `[RewriteWindow] console level=${level} ${sourceId || 'unknown'}:${line} ${message}`
-        if (level >= 3) logger.error(text)
-        else logger.warn(text)
-    })
-    win.webContents.on('render-process-gone', (_event, details) => {
-        logger.error(`[RewriteWindow] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
-    })
-    win.webContents.on('did-fail-load', (_event, code, desc, url) => {
-        logger.error(`[RewriteWindow] did-fail-load code=${code} desc=${desc} url=${url}`)
-    })
-}
 
 export function initRewriteWindow() {
     const handle = (
@@ -136,7 +109,7 @@ function createRewriteWindow() {
     })
 
     rewriteWindow.center()
-    attachRewriteWindowDiagnostics(rewriteWindow)
+    attachWebContentsDiagnostics(rewriteWindow, 'rewrite')
 
     // 以 url hash 的形式定位路由
     if (process.env.ELECTRON_RENDERER_URL) {

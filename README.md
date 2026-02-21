@@ -4,7 +4,7 @@
 
 ## 技术栈
 
-Rust + Tauri v2，前端 vanilla HTML/CSS/TS
+Electron + electron-vite，前端 vanilla HTML/CSS/TS
 
 ## 功能
 
@@ -17,13 +17,13 @@ Rust + Tauri v2，前端 vanilla HTML/CSS/TS
 
 ```bash
 npm install
-npm run tauri dev
+npm run dev
 ```
 
 ## 构建
 
 ```bash
-npm run tauri build
+npm run build
 ```
 
 ## 配置
