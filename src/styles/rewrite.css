@@ -10,6 +10,7 @@
 
 .rewrite-container {
   width: 100%;
+  max-width: 900px;
   flex: 1;
   background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(16px);

@@ -253,15 +253,65 @@ async function deleteModelUI(modelId: string) {
 
 // ── 日志 ──
 
-export function appendLogEntry(entry: LogEntry) {
-  const container = document.getElementById('log-container')
-  if (!container) return
+type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+
+const MAX_RENDER_LOGS = 4000
+let logEntries: LogEntry[] = []
+const enabledLevels = new Set<LogLevel>(['warn', 'error'])
+
+function normalizeLevel(level: string): LogLevel {
+  const lv = String(level || '').toLowerCase()
+  if (lv === 'debug') return 'debug'
+  if (lv === 'error') return 'error'
+  if (lv === 'warn' || lv === 'warning') return 'warn'
+  return 'info'
+}
+
+function isLogVisible(entry: LogEntry): boolean {
+  return enabledLevels.has(normalizeLevel(entry.level))
+}
+
+function buildLogRow(entry: LogEntry): HTMLDivElement {
   const div = document.createElement('div')
   div.className = 'log-entry'
   const time = entry.time.slice(11, 23)
-  const levelClass = `log-level-${entry.level}`
+  const levelClass = `log-level-${normalizeLevel(entry.level)}`
   div.innerHTML = `<span class="log-time">${time}</span> <span class="${levelClass}">[${entry.level.toUpperCase()}]</span> <span class="log-msg">${escapeHtml(entry.msg)}</span>`
-  container.appendChild(div)
+  return div
+}
+
+function renderVisibleLogs() {
+  const container = document.getElementById('log-container')
+  if (!container) return
+  container.innerHTML = ''
+  for (const entry of logEntries) {
+    if (!isLogVisible(entry)) continue
+    container.appendChild(buildLogRow(entry))
+  }
+  container.scrollTop = container.scrollHeight
+}
+
+export function setLogLevelEnabled(level: LogLevel, enabled: boolean) {
+  if (enabled) enabledLevels.add(level)
+  else enabledLevels.delete(level)
+  renderVisibleLogs()
+}
+
+export function clearLogViewCache() {
+  logEntries = []
+  const container = document.getElementById('log-container')
+  if (container) container.innerHTML = ''
+}
+
+export function appendLogEntry(entry: LogEntry) {
+  logEntries.push(entry)
+  if (logEntries.length > MAX_RENDER_LOGS) {
+    logEntries = logEntries.slice(-MAX_RENDER_LOGS)
+  }
+  if (!isLogVisible(entry)) return
+  const container = document.getElementById('log-container')
+  if (!container) return
+  container.appendChild(buildLogRow(entry))
   container.scrollTop = container.scrollHeight
 }
 
@@ -270,13 +320,13 @@ function escapeHtml(s: string): string {
 }
 
 export async function loadLogs() {
-  const container = document.getElementById('log-container')
-  if (!container) return
-  container.innerHTML = ''
   try {
     const logs = await window.electronAPI.getLogs()
-    for (const entry of logs) appendLogEntry(entry)
-  } catch (_) { }
+    logEntries = Array.isArray(logs) ? logs.slice(-MAX_RENDER_LOGS) : []
+    renderVisibleLogs()
+  } catch (e) {
+    console.warn('[Log] loadLogs failed:', e)
+  }
 }
 
 function logsToPlainText(logs: LogEntry[]): string {
@@ -286,10 +336,10 @@ function logsToPlainText(logs: LogEntry[]): string {
 }
 
 export async function copyLogsToClipboard() {
-  const logs = await window.electronAPI.getLogs()
-  const text = logsToPlainText(logs)
+  const visible = logEntries.filter(isLogVisible)
+  const text = logsToPlainText(visible)
   if (!text.trim()) {
-    throw new Error('当前没有可复制的日志')
+    throw new Error('当前筛选条件下没有可复制的日志')
   }
   const ok = await window.electronAPI.copyToClipboard(text)
   if (!ok) {

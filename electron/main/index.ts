@@ -13,6 +13,7 @@ import { getConfig, saveConfig } from './config'
 import { disposeLocalRecognizer } from './local-asr'
 import { initLogger, logger } from './logger'
 import { FocusController } from './focus-controller'
+import { closeDb, initDb } from './db'
 import { isSelfAppId } from './self-app'
 import { initRewriteWindow } from './rewrite-window'
 import {
@@ -164,6 +165,9 @@ app.whenReady().then(async () => {
   })
   logger.info('应用启动')
 
+  logger.info('[Startup] initDb')
+  await initDb()
+
   logger.info('[Startup] setupIpc')
   const config = getConfig()
   setVadEnabled(Boolean(config.vad?.enabled))
@@ -209,6 +213,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  closeDb()
   disposeLocalRecognizer()
   focusController.stopTracking()
   try {

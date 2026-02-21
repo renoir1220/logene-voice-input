@@ -3,13 +3,14 @@
 import os
 import shutil
 import tempfile
+from typing import Optional
 
 from protocol import send_json
 
 # 兼容目录（某些量化模型文件命名与 funasr_onnx 预期不一致时使用）
 _compat_model_dirs: list[str] = []
 # 当前热词临时文件路径（用于清理）
-_hotword_tmp: str | None = None
+_hotword_tmp: Optional[str] = None
 
 
 def resolve_model_id(model_name: str) -> str:

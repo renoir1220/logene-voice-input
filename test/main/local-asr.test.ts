@@ -4,7 +4,7 @@ import type { ChildProcess } from 'child_process'
 
 // mock logger
 vi.mock('../../electron/main/logger', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }))
 
 // mock electron app
@@ -24,6 +24,7 @@ vi.mock('../../electron/main/config', () => ({
 
 // mock model-manager
 vi.mock('../../electron/main/model-manager', () => ({
+  isHotwordCapableModel: (model: { hotwordFormat?: string }) => model.hotwordFormat !== 'none',
   MODELS: [
     {
       id: 'paraformer-zh',
@@ -96,15 +97,26 @@ function createMockProcess(): ChildProcess & { _emit: (event: string, data?: any
 let mockProc: ReturnType<typeof createMockProcess>
 const spawnMock = vi.fn()
 
+const defaultMockConfig = {
+  hotwords: [
+    { name: '全局', words: ['肉眼所见', '鳞状上皮'] },
+    { name: '胃镜', words: ['萎缩性胃炎'] },
+  ],
+  asr: { puncEnabled: true },
+}
+
 vi.mock('child_process', () => ({
   spawn: (...args: any[]) => spawnMock(...args),
 }))
 
 describe('local-asr (sidecar + FunASR)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     vi.resetModules()
     vi.useRealTimers()
+
+    const configMod = await import('../../electron/main/config')
+    vi.mocked(configMod.getConfig).mockReturnValue(defaultMockConfig as any)
 
     mockProc = createMockProcess()
     spawnMock.mockReturnValue(mockProc)
@@ -199,6 +211,36 @@ describe('local-asr (sidecar + FunASR)', () => {
     await initPromise
   })
 
+  it('关闭本地 PUNC 后，init/check 请求应跳过 PUNC 模型', async () => {
+    const configMod = await import('../../electron/main/config')
+    vi.mocked(configMod.getConfig).mockReturnValue({
+      hotwords: [{ name: '全局', words: ['肉眼所见'] }],
+      asr: { puncEnabled: false },
+    } as any)
+
+    const { initLocalRecognizer, checkModelStatus } = await import('../../electron/main/local-asr')
+    const initPromise = initLocalRecognizer('paraformer-zh')
+    await new Promise(r => setTimeout(r, 10))
+    mockProc._emit('stdout', '{"ready":true}')
+    await new Promise(r => setTimeout(r, 10))
+    const initReq = JSON.parse(mockProc.stdin.write.mock.calls[0][0])
+    expect(initReq.usePunc).toBe(false)
+    expect(initReq.puncModelName).toBe('')
+    expect(initReq.puncBackend).toBe('')
+    mockProc._emit('stdout', JSON.stringify({ id: initReq.id, ok: true }))
+    await initPromise
+
+    const checkPromise = checkModelStatus('paraformer-zh')
+    await new Promise(r => setTimeout(r, 10))
+    const checkReq = JSON.parse(mockProc.stdin.write.mock.calls[1][0])
+    expect(checkReq.cmd).toBe('check')
+    expect(checkReq.usePunc).toBe(false)
+    expect(checkReq.puncModelName).toBe('')
+    expect(checkReq.puncBackend).toBe('')
+    mockProc._emit('stdout', JSON.stringify({ id: checkReq.id, ok: true, downloaded: true, incomplete: false, dependencies: [] }))
+    await checkPromise
+  })
+
   it('recognizeLocal 发送 wavBase64 并返回识别文本', async () => {
     const { initLocalRecognizer, recognizeLocal } = await import('../../electron/main/local-asr')
 
@@ -253,6 +295,31 @@ describe('local-asr (sidecar + FunASR)', () => {
   it('未知模型 ID 时抛出错误', async () => {
     const { initLocalRecognizer } = await import('../../electron/main/local-asr')
     await expect(initLocalRecognizer('nonexistent-model')).rejects.toThrow('未知模型')
+  })
+
+  it('不支持热词注入的模型应拒绝初始化', async () => {
+    const modelMod = await import('../../electron/main/model-manager')
+    ;(modelMod.MODELS as Array<Record<string, unknown>>).push({
+      id: 'no-hotword-model',
+      name: 'No Hotword Model',
+      funasrModel: 'iic/no-hotword',
+      description: '测试模型',
+      size: '~1 MB',
+      backend: 'funasr_torch',
+      hotwordFormat: 'none',
+      vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
+      vadBackend: 'funasr_onnx_vad',
+      vadQuantized: true,
+      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+      puncBackend: 'funasr_torch_punc',
+    })
+    try {
+      const { initLocalRecognizer } = await import('../../electron/main/local-asr')
+      await expect(initLocalRecognizer('no-hotword-model')).rejects.toThrow('不支持热词注入')
+      expect(spawnMock).not.toHaveBeenCalled()
+    } finally {
+      modelMod.MODELS.pop()
+    }
   })
 
   it('sidecar 崩溃时拒绝等待中的请求', async () => {

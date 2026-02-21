@@ -298,7 +298,9 @@ export async function applyVadEnabled(enabled: boolean, showHint: boolean) {
       syncVadUi(false)
       try {
         await window.electronAPI.setVadEnabled(false)
-      } catch (_) { }
+      } catch (syncErr) {
+        console.warn('[VAD] rollback setVadEnabled(false) failed:', syncErr)
+      }
       throw e
     }
   } else {

@@ -95,6 +95,8 @@ function createRewriteWindow() {
     rewriteWindow = new BrowserWindow({
         width: 800,
         height: 600,
+        minWidth: 480,
+        minHeight: 400,
         frame: false,
         transparent: true,
         alwaysOnTop: true,

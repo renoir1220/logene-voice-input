@@ -26,6 +26,10 @@ declare global {
       getLogs: () => Promise<LogEntry[]>
       clearLogs: () => Promise<void>
       copyToClipboard: (text: string) => Promise<boolean>
+      getStats: () => Promise<DailyStats>
+      getRecentHistory: (limit?: number) => Promise<RecognitionRecord[]>
+      getAllHistory: (offset?: number, limit?: number) => Promise<RecognitionRecord[]>
+      generateDailySummary: (date: string) => Promise<string>
       reportRendererError: (payload: {
         kind: string
         message: string
@@ -35,8 +39,8 @@ declare global {
         colno?: number
         reason?: string
       }) => Promise<boolean>
+      restartApp: () => Promise<boolean>
       onHotkeyState: (cb: (state: string) => void) => void
-      onHotkeyResult: (cb: (result: string) => void) => void
       onToggleVad: (cb: (enabled: boolean) => void) => void
       onAsrRuntimeStatus: (cb: (status: AsrRuntimeStatus) => void) => void
       onHotkeyStopRecording: (cb: (prevAppId: string | null) => void) => void
@@ -50,6 +54,7 @@ declare global {
       replaceText: (newText: string) => Promise<void>
       onInitRewrite: (cb: (text: string) => void) => void
       onRewriteChunk: (cb: (chunk: string) => void) => void
+      onRecognitionAdded: (cb: () => void) => void
     }
   }
 }
@@ -99,6 +104,36 @@ export interface AsrRuntimeStatus {
   updatedAt: string
 }
 
+export interface LlmModelConfig {
+  id: string
+  name: string
+  baseUrl: string
+  apiKey: string
+  model: string
+  enabled: boolean
+}
+
+export interface LlmConfig {
+  enabled: boolean
+  asrPostProcessEnabled: boolean
+  models: LlmModelConfig[]
+  taskBindings: {
+    rewrite: string
+    asrPostProcess: string
+    dailySummary: string
+  }
+  prompts: {
+    rewrite: LlmTaskPromptConfig
+    asrPostProcess: LlmTaskPromptConfig
+    dailySummary: LlmTaskPromptConfig
+  }
+}
+
+export interface LlmTaskPromptConfig {
+  systemPrompt: string
+  userPromptTemplate: string
+}
+
 // 配置类型（与主进程保持一致）
 export interface AppConfig {
   server: { url: string; asrConfigId: string }
@@ -107,8 +142,26 @@ export interface AppConfig {
   vad: { enabled: boolean; speechThreshold: number; silenceTimeoutMs: number; minSpeechDurationMs: number }
   voiceCommands: Record<string, string>
   hotwords: HotwordScene[]
-  asr: { mode: 'api' | 'local'; localModel: string }
-  llm: { enabled: boolean; baseUrl: string; apiKey: string; model: string }
+  asr: { mode: 'api' | 'local'; localModel: string; puncEnabled: boolean }
+  llm: LlmConfig
+  logging: { enableDebug: boolean }
 }
 
 export type RecordState = 'idle' | 'recording' | 'recognizing' | 'success'
+
+export interface DailyStats {
+  todayCount: number
+  todayChars: number
+  totalCount: number
+  totalChars: number
+}
+
+export interface RecognitionRecord {
+  id: number
+  created_at: string
+  text: string
+  char_count: number
+  mode: string
+  is_command: number
+  command_shortcut: string | null
+}

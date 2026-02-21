@@ -12,6 +12,7 @@ ASR Sidecar 进程 — 基于 FunASR，通过 stdin/stdout JSON 协议与 Electr
       "vadModelName":"iic/speech_fsmn_vad_zh-cn-16k-common-onnx",
       "vadBackend":"funasr_onnx_vad",
       "vadQuantize":true,
+      "usePunc":true,
       "puncModelName":"iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
       "puncBackend":"funasr_torch_punc",
       "hotwords":"肉眼所见 20\\n鳞状上皮 20"
@@ -44,6 +45,7 @@ from inference import (
     split_segments_by_vad,
     run_asr_once,
     run_punc,
+    inspect_hotword_state_for_model,
 )
 import inference
 
@@ -76,8 +78,9 @@ def handle_message(msg: dict) -> dict:
         vad_model_name = msg.get("vadModelName", "")
         vad_backend = msg.get("vadBackend", "funasr_onnx_vad")
         vad_quantize = bool(msg.get("vadQuantize", True))
-        punc_model_name = msg.get("puncModelName", "")
-        punc_backend = msg.get("puncBackend", "funasr_torch_punc")
+        use_punc = bool(msg.get("usePunc", True))
+        punc_model_name = msg.get("puncModelName", "") if use_punc else ""
+        punc_backend = msg.get("puncBackend", "funasr_torch_punc") if use_punc else ""
 
         dependencies = build_dependencies(
             model_name,
@@ -139,20 +142,29 @@ def handle_message(msg: dict) -> dict:
                 },
             )
 
-        send_json({"id": msg_id, "progress": 98, "status": "加载 PUNC 模型..."})
-        try:
-            inference.punc_model = create_punc_model(punc_model_name, punc_backend)
-        except Exception as e:
-            return error_from_exception(
-                msg_id=msg_id,
-                code="PUNC_MODEL_INIT_FAILED",
-                message=f"PUNC 模型初始化失败: {punc_model_name}",
-                phase="init/punc",
-                exc=e,
-                data={"modelName": punc_model_name, "backend": punc_backend},
-            )
+        if use_punc:
+            send_json({"id": msg_id, "progress": 98, "status": "加载 PUNC 模型..."})
+            try:
+                inference.punc_model = create_punc_model(punc_model_name, punc_backend)
+            except Exception as e:
+                return error_from_exception(
+                    msg_id=msg_id,
+                    code="PUNC_MODEL_INIT_FAILED",
+                    message=f"PUNC 模型初始化失败: {punc_model_name}",
+                    phase="init/punc",
+                    exc=e,
+                    data={"modelName": punc_model_name, "backend": punc_backend},
+                )
+        else:
+            inference.punc_model = None
+            send_json({"id": msg_id, "progress": 98, "status": "跳过 PUNC 模型（已关闭）"})
 
-        return {"id": msg_id, "ok": True}
+        hotword_stats = inspect_hotword_state_for_model(
+            inference.asr_model,
+            backend,
+            hotwords,
+        )
+        return {"id": msg_id, "ok": True, "hotwordStats": hotword_stats}
 
     if cmd == "recognize":
         if inference.asr_model is None:
@@ -174,6 +186,16 @@ def handle_message(msg: dict) -> dict:
                 phase="recognize/decode",
                 exc=e,
             )
+
+        if not isinstance(samples, np.ndarray) or samples.size == 0:
+            return {
+                "id": msg_id,
+                "ok": True,
+                "text": "",
+                "rawText": "",
+                "segmentCount": 0,
+                "asrPasses": 0,
+            }
 
         try:
             segments = split_segments_by_vad(samples)
@@ -233,8 +255,9 @@ def handle_message(msg: dict) -> dict:
         vad_model_name = msg.get("vadModelName", "")
         vad_backend = msg.get("vadBackend", "funasr_onnx_vad")
         vad_quantize = bool(msg.get("vadQuantize", True))
-        punc_model_name = msg.get("puncModelName", "")
-        punc_backend = msg.get("puncBackend", "funasr_torch_punc")
+        use_punc = bool(msg.get("usePunc", True))
+        punc_model_name = msg.get("puncModelName", "") if use_punc else ""
+        punc_backend = msg.get("puncBackend", "funasr_torch_punc") if use_punc else ""
 
         dependencies = build_dependencies(
             model_name,

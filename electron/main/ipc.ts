@@ -1,4 +1,4 @@
-import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent } from 'electron'
+import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent, app } from 'electron'
 import * as path from 'path'
 import { getConfig, saveConfig, AppConfig } from './config'
 import { recognize } from './asr'
@@ -8,7 +8,9 @@ import { logger, getLogBuffer, clearLogs } from './logger'
 import { matchVoiceCommand } from './voice-commands'
 import { typeText, sendShortcut } from './input-sim'
 import { normalizeAsrText } from './asr-text'
+import { optimizeAsrTextWithLlm, generateDailySummary } from './llm-service'
 import { FocusController } from './focus-controller'
+import { insertRecognition, getStats, getRecentHistory, getAllHistory, getRecordsByDate } from './db'
 import {
   mainWindow,
   dashboardWindow,
@@ -181,7 +183,32 @@ export function setupIpc(
       voiceCommands: cfg.voiceCommands ?? current.voiceCommands,
       hotwords: cfg.hotwords ?? current.hotwords,
       asr: { ...current.asr, ...cfg.asr },
-      llm: cfg.llm ? { ...current.llm, ...cfg.llm } : current.llm,
+      logging: { ...current.logging, ...cfg.logging },
+      llm: cfg.llm ? {
+        ...current.llm,
+        ...cfg.llm,
+        models: cfg.llm.models ?? current.llm.models,
+        taskBindings: {
+          ...current.llm.taskBindings,
+          ...(cfg.llm.taskBindings ?? {}),
+        },
+        prompts: {
+          ...current.llm.prompts,
+          ...(cfg.llm.prompts ?? {}),
+          rewrite: {
+            ...current.llm.prompts.rewrite,
+            ...(cfg.llm.prompts?.rewrite ?? {}),
+          },
+          asrPostProcess: {
+            ...current.llm.prompts.asrPostProcess,
+            ...(cfg.llm.prompts?.asrPostProcess ?? {}),
+          },
+          dailySummary: {
+            ...current.llm.prompts.dailySummary,
+            ...(cfg.llm.prompts?.dailySummary ?? {}),
+          },
+        },
+      } : current.llm,
     }
     saveConfig(merged)
     updateTrayMenu()
@@ -235,7 +262,11 @@ export function setupIpc(
     const win = new BrowserWindow({
       width: 800,
       height: 600,
+      minWidth: 640,
+      minHeight: 480,
       title: 'Logene Voice Input - 控制台',
+      titleBarStyle: 'hidden',
+      trafficLightPosition: { x: 14, y: 14 },
       webPreferences: {
         preload: path.join(__dirname, '../preload/index.js'),
         contextIsolation: true,
@@ -257,6 +288,13 @@ export function setupIpc(
     win.on('closed', () => {
       setDashboardWindow(null)
     })
+  })
+
+  handle('restart-app', () => {
+    logger.info('[App] 收到重启请求')
+    app.relaunch()
+    app.exit(0)
+    return true
   })
 
   handle('recognize-wav', async (_event, wavBuffer: ArrayBuffer, prevAppId: string | null) => {
@@ -286,18 +324,60 @@ export function setupIpc(
     const result = matchVoiceCommand(text, cfg.voiceCommands)
     const fallbackTarget = focusController.getLastExternalAppId()
     const focusTarget = prevAppId || fallbackTarget
-    logger.info(`[ASR#${reqId}] focus target prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'} chosen=${focusTarget ?? 'null'}`)
+    logger.debug(`[ASR#${reqId}] focus target prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'} chosen=${focusTarget ?? 'null'}`)
     await focusController.restore(focusTarget, `asr#${reqId}`)
 
     if (result.type === 'command') {
       logger.info(`[ASR#${reqId}] 语音指令: ${text.trim()} → ${result.shortcut}`)
       await sendShortcut(result.shortcut)
+      try {
+        insertRecognition({ text: text.trim(), mode: asrMode, isCommand: true, commandShortcut: result.shortcut })
+        dashboardWindow?.webContents.send('recognition-added')
+      } catch (e) {
+        logger.error(`[ASR#${reqId}] 写入识别记录失败: ${e}`)
+      }
       return `${text.trim()} ⌨ ${result.shortcut}`
     } else {
-      logger.info(`[ASR#${reqId}] 输入文字: ${result.text}`)
-      await typeText(result.text)
-      return result.text
+      let outputText = result.text
+      const llmCfg = cfg.llm
+      const shouldOptimizeByLlm = !Boolean(cfg.vad?.enabled)
+        && outputText.trim().length > 8
+        && Boolean(llmCfg?.enabled)
+        && Boolean(llmCfg?.asrPostProcessEnabled)
+        && Array.isArray(llmCfg?.models)
+        && llmCfg.models.length > 0
+
+      if (shouldOptimizeByLlm) {
+        try {
+          const optimized = (await optimizeAsrTextWithLlm(outputText)).trim()
+          if (optimized) {
+            logger.info(`[ASR#${reqId}] LLM 后处理: "${outputText}" -> "${optimized}"`)
+            outputText = optimized
+          }
+        } catch (e) {
+          logger.warn(`[ASR#${reqId}] LLM 后处理失败，回退原识别文本: ${String(e)}`)
+        }
+      }
+
+      logger.info(`[ASR#${reqId}] 输入文字: ${outputText}`)
+      await typeText(outputText)
+      try {
+        insertRecognition({ text: outputText, mode: asrMode, isCommand: false })
+        dashboardWindow?.webContents.send('recognition-added')
+      } catch (e) {
+        logger.error(`[ASR#${reqId}] 写入识别记录失败: ${e}`)
+      }
+      return outputText
     }
+  })
+
+  // ── 统计与历史 IPC ──
+  handle('get-stats', async () => getStats())
+  handle('get-recent-history', async (_event, limit?: number) => getRecentHistory(limit))
+  handle('get-all-history', async (_event, offset?: number, limit?: number) => getAllHistory(offset, limit))
+  handle('generate-daily-summary', async (_event, date: string) => {
+    const records = getRecordsByDate(date)
+    return generateDailySummary(records)
   })
 
   // ── 模型管理 IPC ──
@@ -313,7 +393,7 @@ export function setupIpc(
         const status = inspectLocalModelStatus(m)
         return { ...m, downloaded: status.downloaded, incomplete: status.incomplete, dependencies: status.dependencies }
       })
-      logger.info(`[Model] get-model-statuses done: count=${results.length}, cost=${Date.now() - startedAt}ms`)
+      logger.debug(`[Model] get-model-statuses done: count=${results.length}, cost=${Date.now() - startedAt}ms`)
       return results
     } catch (e) {
       logger.error(`[Model] get-model-statuses failed: ${e instanceof Error ? (e.stack || e.message) : String(e)}`)
@@ -325,7 +405,7 @@ export function setupIpc(
     const startedAt = Date.now()
     const models = getModelInfoList()
     const result = Array.isArray(models) ? models : []
-    logger.info(`[Model] get-model-catalog done: count=${result.length}, cost=${Date.now() - startedAt}ms`)
+    logger.debug(`[Model] get-model-catalog done: count=${result.length}, cost=${Date.now() - startedAt}ms`)
     return result
   })
 

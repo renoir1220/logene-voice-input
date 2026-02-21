@@ -23,25 +23,72 @@ def reset_runtime_models():
 
 # ── 文本归一化 ──
 
-def normalize_hotwords_for_onnx(hotwords: str) -> str:
-    words = []
+def _extract_hotwords(hotwords: str) -> list[str]:
+    words: list[str] = []
     seen: set[str] = set()
-    for line in hotwords.splitlines():
-        parts = line.strip().split()
-        if not parts:
+    lines = hotwords.splitlines()
+
+    for line in lines:
+        tokens = line.strip().split()
+        if not tokens:
             continue
-        word = parts[0]
-        if word not in seen:
-            seen.add(word)
-            words.append(word)
+
+        if len(tokens) >= 2 and tokens[1].replace(".", "", 1).isdigit():
+            token_iter = [tokens[0]]
+        else:
+            token_iter = tokens
+
+        for word in token_iter:
+            if word and word not in seen:
+                seen.add(word)
+                words.append(word)
+
     if not words:
         for word in hotwords.strip().split():
             if word and word not in seen:
                 seen.add(word)
                 words.append(word)
+    return words
+
+
+def normalize_hotwords_for_onnx(hotwords: str) -> str:
+    words = _extract_hotwords(hotwords)
     if not words:
         words.append("。")
     return " ".join(words)
+
+
+def inspect_hotword_state_for_model(model, backend: str, hotwords: str) -> dict:
+    configured_words = _extract_hotwords(hotwords)
+    stats = {
+        "backend": backend,
+        "configuredCount": len(configured_words),
+        "configuredPreview": configured_words[:20],
+        "verified": False,
+        "mode": "backend-pass-through",
+    }
+
+    if backend != "funasr_onnx_contextual":
+        return stats
+
+    normalized = normalize_hotwords_for_onnx(hotwords)
+    normalized_words = normalized.split(" ") if normalized else []
+    stats["normalizedCount"] = len([w for w in normalized_words if w])
+    stats["normalizedPreview"] = normalized_words[:20]
+
+    try:
+        if hasattr(model, "proc_hotword"):
+            _, hotwords_length = model.proc_hotword(normalized)
+            accepted_count = max(int(len(hotwords_length)) - 1, 0)
+            stats["modelAcceptedCount"] = accepted_count
+            stats["verified"] = True
+            stats["mode"] = "model-verified"
+        else:
+            stats["mode"] = "no-proc-hotword-api"
+    except Exception as e:
+        stats["mode"] = "model-verify-failed"
+        stats["verifyError"] = str(e)
+    return stats
 
 
 def normalize_result_text(value) -> str:
@@ -74,7 +121,11 @@ def normalize_result_text(value) -> str:
 
 
 def decode_wav(wav_bytes: bytes) -> np.ndarray:
+    if not wav_bytes or len(wav_bytes) <= 44:
+        return np.array([], dtype=np.float32)
     pcm = wav_bytes[44:]
+    if not pcm:
+        return np.array([], dtype=np.float32)
     samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
     return samples
 
@@ -95,6 +146,8 @@ def _extract_vad_pairs(node, pairs):
 
 
 def split_segments_by_vad(samples: np.ndarray):
+    if not isinstance(samples, np.ndarray) or samples.size == 0:
+        return []
     if vad_model is None:
         return [samples]
     try:
@@ -134,6 +187,8 @@ def split_segments_by_vad(samples: np.ndarray):
 # ── ASR / PUNC 推理 ──
 
 def run_asr_once(samples: np.ndarray) -> str:
+    if not isinstance(samples, np.ndarray) or samples.size == 0:
+        return ""
     if asr_model is None:
         return ""
 
@@ -164,11 +219,20 @@ def run_punc(text: str) -> str:
     if punc_model is None:
         return text
     try:
-        result = punc_model.generate(input=text)
-        if result and len(result) > 0:
-            normalized = normalize_result_text(result[0])
-            if normalized:
-                return normalized
+        # FunASR torch: model.generate(input=...)
+        if hasattr(punc_model, "generate"):
+            result = punc_model.generate(input=text)
+            if result and len(result) > 0:
+                normalized = normalize_result_text(result[0])
+                if normalized:
+                    return normalized
+            return text
+
+        # FunASR ONNX: CT_Transformer(text) -> (punct_text, ids)
+        result = punc_model(text)
+        normalized = normalize_result_text(result)
+        if normalized:
+            return normalized
     except Exception as e:
         raise RuntimeError("PUNC 推理失败") from e
     return text

@@ -1,4 +1,4 @@
-import type { HotwordScene, AppConfig } from './types'
+import type { HotwordScene, AppConfig, LlmModelConfig, LlmTaskPromptConfig } from './types'
 import { renderModelList, setModelListHint } from './dashboard-models'
 import { withTimeout } from './utils'
 
@@ -17,6 +17,236 @@ export function initTabs() {
   })
 }
 
+function llmModelContainer(): HTMLDivElement | null {
+  return document.getElementById('llm-model-list') as HTMLDivElement | null
+}
+
+function normalizeModelId(raw: string, index: number): string {
+  const id = raw.trim()
+  return id || `llm-${index + 1}`
+}
+
+function normalizeHotkey(raw: string): string {
+  return raw
+    .split('+')
+    .map((p) => p.trim().toUpperCase())
+    .filter(Boolean)
+    .join('+')
+}
+
+function collectLlmModelsFromForm(): LlmModelConfig[] {
+  const container = llmModelContainer()
+  if (!container) return []
+
+  const rows = Array.from(container.querySelectorAll<HTMLDivElement>('.llm-model-row'))
+  const usedIds = new Set<string>()
+  const models: LlmModelConfig[] = []
+
+  rows.forEach((row, idx) => {
+    const nameInput = row.querySelector<HTMLInputElement>('.llm-name')
+    const baseUrlInput = row.querySelector<HTMLInputElement>('.llm-baseurl')
+    const apiKeyInput = row.querySelector<HTMLInputElement>('.llm-apikey')
+    const modelInput = row.querySelector<HTMLInputElement>('.llm-model')
+    const enabledInput = row.querySelector<HTMLInputElement>('.llm-enabled')
+
+    if (!nameInput || !baseUrlInput || !apiKeyInput || !modelInput || !enabledInput) return
+
+    const name = nameInput.value.trim() || `模型${idx + 1}`
+    // 根据名称自动生成 id
+    let id = `llm-${idx + 1}`
+    if (usedIds.has(id)) id = `${id}-dup`
+    usedIds.add(id)
+
+    models.push({
+      id,
+      name,
+      baseUrl: baseUrlInput.value.trim(),
+      apiKey: apiKeyInput.value.trim(),
+      model: modelInput.value.trim(),
+      enabled: enabledInput.checked,
+    })
+  })
+
+  return models
+}
+
+function renderTaskBindings(models: LlmModelConfig[], bindings?: { rewrite?: string; asrPostProcess?: string; dailySummary?: string }) {
+  const rewriteSelect = document.getElementById('cfg-llm-task-rewrite') as HTMLSelectElement | null
+  const asrSelect = document.getElementById('cfg-llm-task-asr') as HTMLSelectElement | null
+  const summarySelect = document.getElementById('cfg-llm-task-summary') as HTMLSelectElement | null
+  if (!rewriteSelect || !asrSelect) return
+
+  const options = models.length > 0 ? models : [{
+    id: 'default-llm',
+    name: '默认模型',
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    enabled: true,
+  }]
+  rewriteSelect.innerHTML = ''
+  asrSelect.innerHTML = ''
+  if (summarySelect) summarySelect.innerHTML = ''
+
+  for (const model of options) {
+    const r = document.createElement('option')
+    r.value = model.id
+    r.textContent = model.name
+    rewriteSelect.appendChild(r)
+
+    const a = document.createElement('option')
+    a.value = model.id
+    a.textContent = model.name
+    asrSelect.appendChild(a)
+
+    if (summarySelect) {
+      const s = document.createElement('option')
+      s.value = model.id
+      s.textContent = model.name
+      summarySelect.appendChild(s)
+    }
+  }
+
+  rewriteSelect.value = bindings?.rewrite && options.some((m) => m.id === bindings.rewrite)
+    ? bindings.rewrite
+    : options[0].id
+  asrSelect.value = bindings?.asrPostProcess && options.some((m) => m.id === bindings.asrPostProcess)
+    ? bindings.asrPostProcess
+    : options[0].id
+  if (summarySelect) {
+    summarySelect.value = bindings?.dailySummary && options.some((m) => m.id === bindings.dailySummary)
+      ? bindings.dailySummary
+      : options[0].id
+  }
+}
+
+function setPromptTextareaValue(id: string, value: string) {
+  const input = document.getElementById(id) as HTMLTextAreaElement | null
+  if (input) input.value = value
+}
+
+function getPromptTextareaValue(id: string): string {
+  return (document.getElementById(id) as HTMLTextAreaElement | null)?.value ?? ''
+}
+
+function renderTaskPrompts(prompts: AppConfig['llm']['prompts']) {
+  setPromptTextareaValue('cfg-llm-prompt-rewrite-system', prompts.rewrite.systemPrompt)
+  setPromptTextareaValue('cfg-llm-prompt-rewrite-user', prompts.rewrite.userPromptTemplate)
+
+  setPromptTextareaValue('cfg-llm-prompt-asr-system', prompts.asrPostProcess.systemPrompt)
+  setPromptTextareaValue('cfg-llm-prompt-asr-user', prompts.asrPostProcess.userPromptTemplate)
+
+  setPromptTextareaValue('cfg-llm-prompt-summary-system', prompts.dailySummary.systemPrompt)
+  setPromptTextareaValue('cfg-llm-prompt-summary-user', prompts.dailySummary.userPromptTemplate)
+}
+
+function collectTaskPromptsFromForm(existing: AppConfig['llm']['prompts']): AppConfig['llm']['prompts'] {
+  const readTask = (prefix: string, fallback: LlmTaskPromptConfig): LlmTaskPromptConfig => ({
+    systemPrompt: getPromptTextareaValue(`cfg-llm-prompt-${prefix}-system`) || fallback.systemPrompt,
+    userPromptTemplate: getPromptTextareaValue(`cfg-llm-prompt-${prefix}-user`) || fallback.userPromptTemplate,
+  })
+
+  return {
+    rewrite: readTask('rewrite', existing.rewrite),
+    asrPostProcess: readTask('asr', existing.asrPostProcess),
+    dailySummary: readTask('summary', existing.dailySummary),
+  }
+}
+
+function appendLlmModelRow(model: LlmModelConfig, refreshBindings: boolean) {
+  const container = llmModelContainer()
+  if (!container) return
+
+  const row = document.createElement('div')
+  row.className = 'llm-model-row cmd-editor-row'
+  const createInput = (className: string, type: string, placeholder: string, value: string) => {
+    const input = document.createElement('input')
+    input.className = `cmd-input ${className}`
+    input.type = type
+    input.placeholder = placeholder
+    input.value = value
+    return input
+  }
+
+  const idInput = createInput('llm-id', 'text', '模型ID(唯一)', model.id)
+  const nameInput = createInput('llm-name', 'text', '名称', model.name)
+  const baseUrlInput = createInput('llm-baseurl', 'text', 'Base URL', model.baseUrl)
+  const modelInput = createInput('llm-model', 'text', 'Model Name', model.model)
+  const apiKeyInput = createInput('llm-apikey', 'password', 'API Key', model.apiKey)
+
+  const enabledLabel = document.createElement('label')
+  enabledLabel.className = 'checkbox'
+  const enabledInput = document.createElement('input')
+  enabledInput.className = 'llm-enabled'
+  enabledInput.type = 'checkbox'
+  enabledInput.checked = model.enabled
+  const enabledText = document.createElement('span')
+  enabledText.textContent = '启用'
+  enabledLabel.appendChild(enabledInput)
+  enabledLabel.appendChild(enabledText)
+
+  const delBtn = document.createElement('button')
+  delBtn.className = 'cmd-del-btn llm-del-btn'
+  delBtn.type = 'button'
+  delBtn.textContent = '×'
+
+  row.appendChild(nameInput)
+  row.appendChild(baseUrlInput)
+  row.appendChild(modelInput)
+  row.appendChild(apiKeyInput)
+  row.appendChild(enabledLabel)
+  row.appendChild(delBtn)
+
+  const refresh = () => renderTaskBindings(collectLlmModelsFromForm(), {
+    rewrite: (document.getElementById('cfg-llm-task-rewrite') as HTMLSelectElement | null)?.value,
+    asrPostProcess: (document.getElementById('cfg-llm-task-asr') as HTMLSelectElement | null)?.value,
+    dailySummary: (document.getElementById('cfg-llm-task-summary') as HTMLSelectElement | null)?.value,
+  })
+
+  delBtn.addEventListener('click', () => {
+    row.remove()
+    refresh()
+  })
+  nameInput.addEventListener('input', refresh)
+  enabledInput.addEventListener('change', refresh)
+
+  container.appendChild(row)
+  if (refreshBindings) refresh()
+}
+
+function renderLlmModelRows(models: LlmModelConfig[], bindings?: { rewrite?: string; asrPostProcess?: string }) {
+  const container = llmModelContainer()
+  if (!container) return
+  container.innerHTML = ''
+  const finalModels = models.length > 0
+    ? models
+    : [{
+      id: 'default-llm',
+      name: '默认模型',
+      baseUrl: '',
+      apiKey: '',
+      model: '',
+      enabled: true,
+    }]
+  for (const model of finalModels) {
+    appendLlmModelRow(model, false)
+  }
+  renderTaskBindings(finalModels, bindings)
+}
+
+export function addLlmModel() {
+  const models = collectLlmModelsFromForm()
+  const nextIdx = models.length + 1
+  appendLlmModelRow({
+    id: `llm-${nextIdx}`,
+    name: `模型${nextIdx}`,
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    enabled: true,
+  }, true)
+}
+
 // ── 配置表单 ──
 
 export async function loadConfigToForm() {
@@ -28,13 +258,18 @@ export async function loadConfigToForm() {
     ;urlInput.value = cfg.server?.url || ''
     ;(document.getElementById('cfg-hotkey') as HTMLInputElement).value = cfg.hotkey?.record || ''
     ;(document.getElementById('cfg-clipboard') as HTMLInputElement).checked = cfg.input?.useClipboard || false
+    ;(document.getElementById('cfg-log-debug-enabled') as HTMLInputElement).checked = cfg.logging?.enableDebug || false
     ;(document.getElementById('cfg-vad') as HTMLInputElement).checked = cfg.vad?.enabled || false
     ;(document.getElementById('dashboard-vad-toggle') as HTMLInputElement).checked = cfg.vad?.enabled || false
     ;(document.getElementById('cfg-llm-enabled') as HTMLInputElement).checked = cfg.llm?.enabled || false
-    ;(document.getElementById('cfg-llm-baseurl') as HTMLInputElement).value = cfg.llm?.baseUrl || ''
-    ;(document.getElementById('cfg-llm-apikey') as HTMLInputElement).value = cfg.llm?.apiKey || ''
-    ;(document.getElementById('cfg-llm-model') as HTMLInputElement).value = cfg.llm?.model || ''
+    ;(document.getElementById('cfg-llm-asr-optimize') as HTMLInputElement).checked =
+      typeof cfg.llm?.asrPostProcessEnabled === 'boolean'
+        ? cfg.llm.asrPostProcessEnabled
+        : false
+    renderLlmModelRows(cfg.llm?.models || [], cfg.llm?.taskBindings)
+    renderTaskPrompts(cfg.llm.prompts)
     const asrMode = cfg.asr?.mode ?? 'api'
+    ;(document.getElementById('cfg-local-punc-enabled') as HTMLInputElement).checked = cfg.asr?.puncEnabled !== false
     ;(document.getElementById('asr-mode-api') as HTMLInputElement).checked = asrMode === 'api'
     ;(document.getElementById('asr-mode-local') as HTMLInputElement).checked = asrMode === 'local'
     updateAsrModeUI(asrMode)
@@ -50,23 +285,50 @@ export async function saveConfig() {
   const llmHint = document.getElementById('llm-save-hint')
   try {
     const cfg = await window.electronAPI.getConfig()
+    const prevHotkey = normalizeHotkey(cfg.hotkey?.record || '')
     cfg.server.url = (document.getElementById('cfg-url') as HTMLInputElement).value.trim()
     cfg.hotkey.record = (document.getElementById('cfg-hotkey') as HTMLInputElement).value.trim()
+    const nextHotkey = normalizeHotkey(cfg.hotkey.record)
+    const needsRestart = prevHotkey !== nextHotkey
     cfg.input.useClipboard = (document.getElementById('cfg-clipboard') as HTMLInputElement).checked
+    cfg.logging = {
+      ...cfg.logging,
+      enableDebug: (document.getElementById('cfg-log-debug-enabled') as HTMLInputElement).checked,
+    }
     const asrMode = (document.getElementById('asr-mode-local') as HTMLInputElement).checked ? 'local' : 'api'
-    cfg.asr = { ...cfg.asr, mode: asrMode }
+    cfg.asr = {
+      ...cfg.asr,
+      mode: asrMode,
+      puncEnabled: (document.getElementById('cfg-local-punc-enabled') as HTMLInputElement).checked,
+    }
+    const llmModels = collectLlmModelsFromForm()
+    const fallbackModelId = llmModels[0]?.id || 'default-llm'
+    const rewriteBinding = (document.getElementById('cfg-llm-task-rewrite') as HTMLSelectElement | null)?.value || fallbackModelId
+    const asrBinding = (document.getElementById('cfg-llm-task-asr') as HTMLSelectElement | null)?.value || fallbackModelId
+    const summaryBinding = (document.getElementById('cfg-llm-task-summary') as HTMLSelectElement | null)?.value || fallbackModelId
     cfg.llm = {
       enabled: (document.getElementById('cfg-llm-enabled') as HTMLInputElement).checked,
-      baseUrl: (document.getElementById('cfg-llm-baseurl') as HTMLInputElement).value.trim(),
-      apiKey: (document.getElementById('cfg-llm-apikey') as HTMLInputElement).value.trim(),
-      model: (document.getElementById('cfg-llm-model') as HTMLInputElement).value.trim()
+      asrPostProcessEnabled: (document.getElementById('cfg-llm-asr-optimize') as HTMLInputElement).checked,
+      models: llmModels,
+      taskBindings: {
+        rewrite: llmModels.some((m) => m.id === rewriteBinding) ? rewriteBinding : fallbackModelId,
+        asrPostProcess: llmModels.some((m) => m.id === asrBinding) ? asrBinding : fallbackModelId,
+        dailySummary: llmModels.some((m) => m.id === summaryBinding) ? summaryBinding : fallbackModelId,
+      },
+      prompts: collectTaskPromptsFromForm(cfg.llm.prompts),
     }
     await window.electronAPI.saveConfig(cfg)
-    hint.textContent = '已保存，部分设置重启后生效'
+    hint.textContent = needsRestart ? '已保存，热键变更需重启后生效' : '已保存'
     hint.style.color = '#4ade80'
     if (llmHint) {
       llmHint.textContent = '应用已持久化'
       llmHint.style.color = '#4ade80'
+    }
+    if (needsRestart) {
+      const shouldRestart = window.confirm('热键配置已变更，需要重启应用后生效。现在重启吗？')
+      if (shouldRestart) {
+        await window.electronAPI.restartApp()
+      }
     }
   } catch (e) {
     hint.textContent = '保存失败: ' + String(e)
@@ -107,7 +369,9 @@ export async function renderCommandList() {
       list.appendChild(nameEl)
       list.appendChild(keyEl)
     }
-  } catch (_) { }
+  } catch (e) {
+    console.warn('[Command] renderCommandList failed:', e)
+  }
 }
 
 export async function renderCommandEditor() {
@@ -121,7 +385,9 @@ export async function renderCommandEditor() {
     for (const [name, key] of entries) {
       appendCommandRow(editorList, name, key)
     }
-  } catch (_) { }
+  } catch (e) {
+    console.warn('[Command] renderCommandEditor failed:', e)
+  }
 }
 
 export function appendCommandRow(container: HTMLElement, name = '', key = '') {
@@ -194,7 +460,9 @@ export async function loadHotwords() {
     if (searchInput) searchInput.value = ''
     renderSceneTabs()
     renderHotwordTags()
-  } catch (_) { }
+  } catch (e) {
+    console.warn('[Hotword] loadHotwords failed:', e)
+  }
 }
 
 function renderSceneTabs() {

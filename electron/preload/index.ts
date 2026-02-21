@@ -13,7 +13,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAsrRuntimeStatus: () => ipcRenderer.invoke('get-asr-runtime-status'),
   recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) =>
     ipcRenderer.invoke('recognize-wav', wavBuffer, prevAppId),
-  switchMode: (mode: 'float' | 'dashboard') => ipcRenderer.invoke('switch-mode', mode),
   getWindowPosition: () => ipcRenderer.invoke('get-window-position'),
   setWindowPosition: (x: number, y: number) => ipcRenderer.invoke('set-window-position', x, y),
 
@@ -27,6 +26,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLogs: () => ipcRenderer.invoke('get-logs'),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
   copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text),
+
+  // 统计与历史
+  getStats: () => ipcRenderer.invoke('get-stats'),
+  getRecentHistory: (limit?: number) => ipcRenderer.invoke('get-recent-history', limit),
+  getAllHistory: (offset?: number, limit?: number) => ipcRenderer.invoke('get-all-history', offset, limit),
+  generateDailySummary: (date: string) => ipcRenderer.invoke('generate-daily-summary', date),
   reportRendererError: (payload: {
     kind: string
     message: string
@@ -36,6 +41,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     colno?: number
     reason?: string
   }) => ipcRenderer.invoke('report-renderer-error', payload),
+  restartApp: () => ipcRenderer.invoke('restart-app'),
 
   // 重写专用通道
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),
@@ -46,9 +52,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 主进程 → 渲染进程（on，事件监听）
   onHotkeyState: (cb: (state: string) => void) => {
     ipcRenderer.on('hotkey-state', (_e, state) => cb(state))
-  },
-  onHotkeyResult: (cb: (result: string) => void) => {
-    ipcRenderer.on('hotkey-result', (_e, result) => cb(result))
   },
   onToggleVad: (cb: (enabled: boolean) => void) => {
     ipcRenderer.on('toggle-vad', (_e, enabled) => cb(Boolean(enabled)))
@@ -83,5 +86,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onRewriteChunk: (cb: (chunk: string) => void) => {
     ipcRenderer.on('rewrite-chunk', (_e, chunk) => cb(chunk))
+  },
+  // 识别记录新增通知
+  onRecognitionAdded: (cb: () => void) => {
+    ipcRenderer.on('recognition-added', () => cb())
   }
 })

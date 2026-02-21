@@ -67,6 +67,19 @@ def create_vad_model(model_name: str, backend: str, quantize: bool):
 def create_punc_model(model_name: str, backend: str):
     if not model_name:
         return None
+    if backend == "funasr_onnx_punc":
+        try:
+            from funasr_onnx.punc_bin import CT_Transformer
+        except ImportError as e:
+            raise RuntimeError("缺少 funasr_onnx 依赖，请安装 requirements.txt 后重试") from e
+
+        return CT_Transformer(
+            model_dir=resolve_model_dir(model_name),
+            quantize=False,
+            device_id="-1",
+            intra_op_num_threads=2,
+        )
+
     if backend == "funasr_torch_punc":
         import funasr.tokenizer.char_tokenizer  # noqa: F401
         import funasr.models.ct_transformer.model  # noqa: F401

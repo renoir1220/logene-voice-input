@@ -144,7 +144,7 @@ export class FocusController {
       : this.lastExternalAppId
 
     if (logResult && this.debugTrace) {
-      logger.info(
+      logger.debug(
         `[Focus] snapshot reason=${reason} current=${current ?? 'null'} lastExternal=${this.lastExternalAppId ?? 'null'} chosen=${chosen ?? 'null'}`,
       )
     }
@@ -154,12 +154,12 @@ export class FocusController {
   async restore(snapshot: string | null, reason: string): Promise<void> {
     const target = snapshot || this.lastExternalAppId
     if (!target) {
-      if (this.debugTrace) logger.info(`[Focus] restore skipped reason=${reason} target=null`)
+      if (this.debugTrace) logger.debug(`[Focus] restore skipped reason=${reason} target=null`)
       return
     }
 
     if (this.debugTrace) {
-      logger.info(
+      logger.debug(
         `[Focus] restore begin reason=${reason} target=${target} snapshot=${snapshot ?? 'null'} lastExternal=${this.lastExternalAppId ?? 'null'}`,
       )
     }
@@ -168,10 +168,10 @@ export class FocusController {
       await restoreFocus(target)
       const current = await this.getCurrentFrontmost()
       if (this.debugTrace) {
-        logger.info(`[Focus] restore attempt=${i + 1} reason=${reason} target=${target} current=${current ?? 'null'}`)
+        logger.debug(`[Focus] restore attempt=${i + 1} reason=${reason} target=${target} current=${current ?? 'null'}`)
       }
       if (current === target || (current && !this.options.isSelfAppId(current))) {
-        if (this.debugTrace) logger.info(`[Focus] restore success attempt=${i + 1} reason=${reason} target=${target}`)
+        if (this.debugTrace) logger.debug(`[Focus] restore success attempt=${i + 1} reason=${reason} target=${target}`)
         return
       }
       await sleep(70)

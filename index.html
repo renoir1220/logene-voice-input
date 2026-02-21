@@ -44,18 +44,6 @@
               <path d="M7 12h2v5H7zm4-3h2v8h-2zm4-4h2v12h-2z" />
             </svg>状态与统计
           </button>
-          <button class="menu-item" data-tab="commands">
-            <svg viewBox="0 0 24 24">
-              <path
-                d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z" />
-            </svg>语音指令表
-          </button>
-          <button class="menu-item" data-tab="hotwords">
-            <svg viewBox="0 0 24 24">
-              <path
-                d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z" />
-            </svg>热词
-          </button>
           <button class="menu-item" data-tab="settings">
             <svg viewBox="0 0 24 24">
               <path
@@ -67,7 +55,12 @@
             <svg viewBox="0 0 24 24">
               <path
                 d="M21 16.5c0 .38-.21.71-.53.88l-7.9 4.44c-.16.12-.36.18-.57.18-.21 0-.41-.06-.57-.18l-7.9-4.44A.991.991 0 0 1 3 16.5v-9c0-.38.21-.71.53-.88l7.9-4.44c.16-.12.36-.18.57-.18.21 0 .41.06.57.18l7.9 4.44c.32.17.53.5.53.88v9zM12 4.15L6.04 7.5 12 10.85l5.96-3.35L12 4.15zM5 15.91l6 3.38v-6.71L5 9.21v6.7zm14 0v-6.7l-6 3.38v6.71l6-3.38z" />
-            </svg>大模型设置
+            </svg>模型与任务
+          </button>
+          <button class="menu-item" data-tab="history">
+            <svg viewBox="0 0 24 24">
+              <path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
+            </svg>对话记录
           </button>
           <button class="menu-item" data-tab="logs">
             <svg viewBox="0 0 24 24">
@@ -79,24 +72,26 @@
         <!-- 内容主区 -->
         <div class="content">
           <div class="content-header">
-            <button id="close-dashboard-btn" class="close-dashboard-btn" title="收起为主面板/悬浮球">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-                <path d="M19 13H5v-2h14v2z" />
-              </svg>
-            </button>
           </div>
           <!-- 状态页 -->
           <div id="tab-status" class="tab-pane active">
             <h2 class="page-title">运行状态</h2>
             <div class="card-grid">
               <div class="stat-card">
-                <div class="stat-value">就绪</div>
+                <div id="stat-engine" class="stat-value">就绪</div>
                 <div class="stat-label">引擎状态</div>
               </div>
-              <!-- 未来可在这里加入当天的输入字符数、耗时图表等 -->
               <div class="stat-card">
-                <div class="stat-value">--</div>
+                <div id="stat-today-count" class="stat-value">--</div>
                 <div class="stat-label">今日听写次数</div>
+              </div>
+              <div class="stat-card">
+                <div id="stat-today-chars" class="stat-value">--</div>
+                <div class="stat-label">今日字符数</div>
+              </div>
+              <div class="stat-card">
+                <div id="stat-total-count" class="stat-value">--</div>
+                <div class="stat-label">累计听写次数</div>
               </div>
             </div>
             <div class="card">
@@ -107,144 +102,228 @@
                 <span class="slider"></span>
               </label>
             </div>
-          </div>
-
-          <!-- 语音指令页 -->
-          <div id="tab-commands" class="tab-pane">
-            <h2 class="page-title">专属语音触发指令</h2>
-            <p class="desc">您可以把常用快捷键和口令绑定，说出"口令"系统自动产生相应的系统级键盘快捷键操作。</p>
             <div class="card">
-              <div id="cmd-editor-list" class="cmd-editor-list"></div>
-              <button id="add-cmd-btn" class="btn btn-outline">+ 增加映射</button>
-            </div>
-            <div class="actions-row">
-              <div id="cmd-save-hint" class="save-hint"></div>
-              <button id="save-cmd-btn" class="btn btn-primary">保存语音指令</button>
+              <h3>最近识别记录</h3>
+              <div id="history-list" class="history-list">
+                <div class="history-empty">暂无识别记录</div>
+              </div>
             </div>
           </div>
 
-          <!-- 热词页 -->
-          <div id="tab-hotwords" class="tab-pane">
-            <h2 class="page-title">ASR 热词管理</h2>
-            <p class="desc">按场景管理 ASR 热词，提升专业术语识别准确率。</p>
-            <div class="hotword-scene-bar">
-              <div id="scene-tabs" class="scene-tabs"></div>
-              <button id="add-scene-btn" class="btn-icon" title="新增场景">+</button>
-            </div>
-            <div class="card">
-              <div class="hotword-input-row">
-                <input id="hotword-search" type="text" class="input hotword-search-input" placeholder="搜索热词..." />
-              </div>
-              <div class="hotword-input-row">
-                <input id="hotword-input" type="text" class="input hotword-add-input" placeholder="输入热词后按 Enter 添加" />
-              </div>
-              <div id="hotword-tags" class="hotword-tags"></div>
-            </div>
-            <div class="actions-row">
-              <div id="hotword-save-hint" class="save-hint"></div>
-              <button id="save-hotwords-btn" class="btn btn-primary">保存热词</button>
-            </div>
-          </div>
-
-          <!-- 设置页 -->
+          <!-- 首选项 -->
           <div id="tab-settings" class="tab-pane">
-            <h2 class="page-title">底层架构设置</h2>
+            <h2 class="page-title">首选项</h2>
+            <div class="sub-tabs">
+              <button class="sub-tab active" data-subtab="settings-basic">基本设置</button>
+              <button class="sub-tab" data-subtab="settings-commands">语音指令</button>
+              <button class="sub-tab" data-subtab="settings-hotwords">热词管理</button>
+            </div>
 
-            <!-- ASR 识别模式 -->
-            <div class="card">
-              <h3>语音识别模式</h3>
-              <div class="asr-mode-selector">
-                <label class="asr-mode-option">
-                  <input type="radio" name="asr-mode" value="api" id="asr-mode-api" checked />
-                  <div class="asr-mode-card">
-                    <div class="asr-mode-title">远程 API</div>
-                    <div class="asr-mode-desc">调用服务端 ASR 接口，需要网络连接</div>
-                  </div>
-                </label>
-                <label class="asr-mode-option">
-                  <input type="radio" name="asr-mode" value="local" id="asr-mode-local" />
-                  <div class="asr-mode-card">
-                    <div class="asr-mode-title">本地模型</div>
-                    <div class="asr-mode-desc">离线运行，无需网络，首次需下载模型</div>
-                  </div>
-                </label>
+            <!-- 子页：基本设置 -->
+            <div id="subtab-settings-basic" class="sub-tab-pane active">
+              <div class="card">
+                <div class="form-group">
+                  <label>组合热键 (推入录音)</label>
+                  <input id="cfg-hotkey" type="text" class="input" placeholder="Alt+Space" />
+                  <span class="tip">长按此键说话。</span>
+                </div>
+                <div class="form-group row-group">
+                  <label class="checkbox">
+                    <input id="cfg-clipboard" type="checkbox" />
+                    <span>启用剪贴板注入模式 (兼容大部分富文本型病历编辑器)</span>
+                  </label>
+                </div>
+                <div class="form-group row-group">
+                  <label class="checkbox">
+                    <input id="cfg-log-debug-enabled" type="checkbox" />
+                    <span>记录 Debug 日志（默认关闭，开启后会记录更详细诊断日志）</span>
+                  </label>
+                </div>
+                <div class="form-group row-group" style="display:none">
+                  <label class="checkbox">
+                    <input id="cfg-vad" type="checkbox" />
+                    <span>遗留VAD配置(已移到底层)</span>
+                  </label>
+                </div>
+              </div>
+              <div class="actions-row">
+                <div id="save-hint" class="save-hint"></div>
+                <button id="save-btn" class="btn btn-primary">保存设置</button>
               </div>
             </div>
 
-            <!-- API 设置（仅 API 模式显示） -->
-            <div id="api-settings" class="card">
-              <h3>API 设置</h3>
-              <div class="form-group">
-                <label>ASR 服务端点地址</label>
-                <input id="cfg-url" type="text" class="input" placeholder="http://localhost:3000" />
-                <span class="tip">部署转写大模型的后台地址</span>
+            <!-- 子页：语音指令 -->
+            <div id="subtab-settings-commands" class="sub-tab-pane">
+              <p class="desc">把常用快捷键和口令绑定，说出口令后系统自动触发对应的键盘快捷键。</p>
+              <div class="card">
+                <div id="cmd-editor-list" class="cmd-editor-list"></div>
+                <button id="add-cmd-btn" class="btn btn-outline">+ 增加映射</button>
+              </div>
+              <div class="actions-row">
+                <div id="cmd-save-hint" class="save-hint"></div>
+                <button id="save-cmd-btn" class="btn btn-primary">保存语音指令</button>
               </div>
             </div>
 
-            <!-- 本地模型管理（仅本地模式显示） -->
-            <div id="local-model-settings" class="card" style="display:none">
-              <h3>本地模型管理</h3>
-              <p class="desc" style="margin-bottom:12px">选择并下载 ASR 模型，下载后即可离线使用。</p>
-              <div id="model-integrity-tip" class="model-integrity-tip" style="display:none"></div>
-              <div id="model-list-hint" class="model-list-hint" style="display:none"></div>
-              <div id="model-list" class="model-list"></div>
-            </div>
-
-            <!-- 通用设置 -->
-            <div class="card">
-              <div class="form-group">
-                <label>组合热键 (推入录音)</label>
-                <input id="cfg-hotkey" type="text" class="input" placeholder="Alt+Space" />
-                <span class="tip">长按此键说话。</span>
+            <!-- 子页：热词管理 -->
+            <div id="subtab-settings-hotwords" class="sub-tab-pane">
+              <p class="desc">按场景管理 ASR 热词，提升专业术语识别准确率。</p>
+              <div class="hotword-scene-bar">
+                <div id="scene-tabs" class="scene-tabs"></div>
+                <button id="add-scene-btn" class="btn-icon" title="新增场景">+</button>
               </div>
-              <div class="form-group row-group">
-                <label class="checkbox">
-                  <input id="cfg-clipboard" type="checkbox" />
-                  <span>启用剪贴板注入模式 (兼容大部分富文本型病历编辑器)</span>
-                </label>
+              <div class="card">
+                <div class="hotword-input-row">
+                  <input id="hotword-search" type="text" class="input hotword-search-input" placeholder="搜索热词..." />
+                </div>
+                <div class="hotword-input-row">
+                  <input id="hotword-input" type="text" class="input hotword-add-input" placeholder="输入热词后按 Enter 添加" />
+                </div>
+                <div id="hotword-tags" class="hotword-tags"></div>
               </div>
-              <div class="form-group row-group" style="display:none">
-                <label class="checkbox">
-                  <input id="cfg-vad" type="checkbox" />
-                  <span>遗留VAD配置(已移到底层)</span>
-                </label>
+              <div class="actions-row">
+                <div id="hotword-save-hint" class="save-hint"></div>
+                <button id="save-hotwords-btn" class="btn btn-primary">保存热词</button>
               </div>
-            </div>
-            <div class="actions-row">
-              <div id="save-hint" class="save-hint"></div>
-              <button id="save-btn" class="btn btn-primary">保存全部设置且重启服务</button>
             </div>
           </div>
 
-          <!-- LLM大模型设置页 -->
+          <!-- 模型与任务设置页 -->
           <div id="tab-llm" class="tab-pane">
-            <h2 class="page-title">大语言模型配置 (OpenAI 兼容)</h2>
-            <div class="card">
-              <div class="form-group row-group">
-                <label class="checkbox">
-                  <input id="cfg-llm-enabled" type="checkbox" />
-                  <span>启用划词与语音重写辅助特性 (需设置下方参数)</span>
-                </label>
+            <h2 class="page-title">模型与任务设置</h2>
+            <div class="sub-tabs">
+              <button class="sub-tab active" data-subtab="llm-voice">语音模型</button>
+              <button class="sub-tab" data-subtab="llm-models">大模型配置</button>
+              <button class="sub-tab" data-subtab="llm-tasks">任务绑定</button>
+            </div>
+
+            <!-- 子页：语音模型 -->
+            <div id="subtab-llm-voice" class="sub-tab-pane active">
+              <div class="card">
+                <h3>语音识别模式</h3>
+                <div class="asr-mode-selector">
+                  <label class="asr-mode-option">
+                    <input type="radio" name="asr-mode" value="api" id="asr-mode-api" checked />
+                    <div class="asr-mode-card">
+                      <div class="asr-mode-title">远程 API</div>
+                      <div class="asr-mode-desc">调用服务端 ASR 接口，需要网络连接</div>
+                    </div>
+                  </label>
+                  <label class="asr-mode-option">
+                    <input type="radio" name="asr-mode" value="local" id="asr-mode-local" />
+                    <div class="asr-mode-card">
+                      <div class="asr-mode-title">本地模型</div>
+                      <div class="asr-mode-desc">离线运行，无需网络，首次需下载模型</div>
+                    </div>
+                  </label>
+                </div>
               </div>
-              <div class="form-group">
-                <label>Base URL</label>
-                <input id="cfg-llm-baseurl" type="text" class="input" placeholder="https://api.openai.com/v1" />
-                <span class="tip">遵循 OpenAI API 标准的端点根地址 (无兜底路由，必须填写)</span>
+              <div id="api-settings" class="card">
+                <h3>API 设置</h3>
+                <div class="form-group">
+                  <label>ASR 服务端点地址</label>
+                  <input id="cfg-url" type="text" class="input" placeholder="http://localhost:3000" />
+                  <span class="tip">部署转写大模型的后台地址</span>
+                </div>
               </div>
-              <div class="form-group">
-                <label>API Key</label>
-                <input id="cfg-llm-apikey" type="password" class="input" placeholder="sk-xxxxxx..." />
-                <span class="tip">调用大模型的身份凭证凭证密钥</span>
-              </div>
-              <div class="form-group">
-                <label>Model Name</label>
-                <input id="cfg-llm-model" type="text" class="input" placeholder="gpt-4o-mini" />
-                <span class="tip">具体用于重写的模型名称标志（如 qwen-max, gpt-3.5-turbo 等）</span>
+              <div id="local-model-settings" class="card" style="display:none">
+                <h3>本地模型管理</h3>
+                <p class="desc" style="margin-bottom:12px">选择并下载 ASR 模型，下载后即可离线使用。</p>
+                <div class="form-group row-group">
+                  <label class="checkbox">
+                    <input id="cfg-local-punc-enabled" type="checkbox" checked />
+                    <span>启用本地 PUNC 标点恢复（关闭后可减少本地占用）</span>
+                  </label>
+                </div>
+                <div id="model-integrity-tip" class="model-integrity-tip" style="display:none"></div>
+                <div id="model-list-hint" class="model-list-hint" style="display:none"></div>
+                <div id="model-list" class="model-list"></div>
               </div>
             </div>
+
+            <!-- 子页：大模型配置 -->
+            <div id="subtab-llm-models" class="sub-tab-pane">
+              <div class="card">
+                <div class="form-group row-group">
+                  <label class="checkbox">
+                    <input id="cfg-llm-enabled" type="checkbox" />
+                    <span>启用划词与语音重写辅助特性 (需设置下方参数)</span>
+                  </label>
+                </div>
+                <div class="form-group row-group">
+                  <label class="checkbox">
+                    <input id="cfg-llm-asr-optimize" type="checkbox" />
+                    <span>启用识别后 LLM 优化（仅非 VAD 模式，且识别文本大于 8 字）</span>
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label>模型列表</label>
+                  <div id="llm-model-list" class="cmd-editor-list llm-model-list"></div>
+                  <button id="llm-add-model-btn" type="button" class="btn btn-outline llm-add-model-btn">新增模型</button>
+                  <span class="tip">支持配置多个 OpenAI 兼容模型，可分别绑定到不同任务。</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 子页：任务绑定 -->
+            <div id="subtab-llm-tasks" class="sub-tab-pane">
+              <div class="card">
+                <div class="task-bind-list">
+                  <div class="task-bind-item">
+                    <div class="task-bind-header">
+                      <label for="cfg-llm-task-rewrite">划词重写</label>
+                      <select id="cfg-llm-task-rewrite" class="input">
+                        <option value="default-llm">默认模型</option>
+                      </select>
+                    </div>
+                    <p class="task-bind-desc">选中文本后调用大模型进行润色、翻译或改写。推荐使用高质量模型以获得更好的文本效果。</p>
+                    <div class="task-prompt-grid">
+                      <label for="cfg-llm-prompt-rewrite-system">系统 Prompt</label>
+                      <textarea id="cfg-llm-prompt-rewrite-system" class="input task-prompt-input" rows="5"></textarea>
+                      <label for="cfg-llm-prompt-rewrite-user">用户 Prompt 模板</label>
+                      <textarea id="cfg-llm-prompt-rewrite-user" class="input task-prompt-input" rows="4"
+                        placeholder="可用变量：{{instruction}} {{selectedText}}"></textarea>
+                    </div>
+                  </div>
+                  <div class="task-bind-item">
+                    <div class="task-bind-header">
+                      <label for="cfg-llm-task-asr">语音识别后处理</label>
+                      <select id="cfg-llm-task-asr" class="input">
+                        <option value="default-llm">默认模型</option>
+                      </select>
+                    </div>
+                    <p class="task-bind-desc">语音识别完成后自动修正错别字、补全标点。每次识别都会调用，推荐使用低延迟的快速模型。</p>
+                    <div class="task-prompt-grid">
+                      <label for="cfg-llm-prompt-asr-system">系统 Prompt</label>
+                      <textarea id="cfg-llm-prompt-asr-system" class="input task-prompt-input" rows="5"></textarea>
+                      <label for="cfg-llm-prompt-asr-user">用户 Prompt 模板</label>
+                      <textarea id="cfg-llm-prompt-asr-user" class="input task-prompt-input" rows="4"
+                        placeholder="可用变量：{{text}}"></textarea>
+                    </div>
+                  </div>
+                  <div class="task-bind-item">
+                    <div class="task-bind-header">
+                      <label for="cfg-llm-task-summary">每日总结</label>
+                      <select id="cfg-llm-task-summary" class="input">
+                        <option value="default-llm">默认模型</option>
+                      </select>
+                    </div>
+                    <p class="task-bind-desc">汇总当天所有语音录入内容，提炼有价值的信息。手动触发，推荐使用高质量模型。</p>
+                    <div class="task-prompt-grid">
+                      <label for="cfg-llm-prompt-summary-system">系统 Prompt</label>
+                      <textarea id="cfg-llm-prompt-summary-system" class="input task-prompt-input" rows="5"></textarea>
+                      <label for="cfg-llm-prompt-summary-user">用户 Prompt 模板</label>
+                      <textarea id="cfg-llm-prompt-summary-user" class="input task-prompt-input" rows="5"
+                        placeholder="可用变量：{{count}} {{records}}"></textarea>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="actions-row">
               <div id="llm-save-hint" class="save-hint"></div>
-              <button id="llm-save-btn" class="btn btn-primary">保存大模型配置</button>
+              <button id="llm-save-btn" class="btn btn-primary">保存设置</button>
             </div>
           </div>
 
@@ -254,6 +333,22 @@
             <p class="desc">实时查看应用运行日志，便于排查本地模型和识别问题。</p>
             <div class="log-card">
               <div class="log-toolbar">
+                <label class="checkbox log-filter-item">
+                  <input id="log-filter-debug" type="checkbox" />
+                  <span>Debug</span>
+                </label>
+                <label class="checkbox log-filter-item">
+                  <input id="log-filter-error" type="checkbox" checked />
+                  <span>Error</span>
+                </label>
+                <label class="checkbox log-filter-item">
+                  <input id="log-filter-warn" type="checkbox" checked />
+                  <span>Warning</span>
+                </label>
+                <label class="checkbox log-filter-item">
+                  <input id="log-filter-info" type="checkbox" />
+                  <span>Info</span>
+                </label>
                 <button id="log-copy-btn" class="btn btn-outline" style="width:auto;padding:6px 12px">复制</button>
                 <button id="log-clear-btn" class="btn btn-outline" style="width:auto;padding:6px 12px">清空</button>
               </div>
@@ -261,6 +356,32 @@
             </div>
           </div>
 
+          <!-- 对话记录页 -->
+          <div id="tab-history" class="tab-pane">
+            <div class="history-page-header">
+              <h2 class="page-title">对话记录</h2>
+              <button id="daily-summary-btn" class="btn btn-primary">生成今日总结</button>
+            </div>
+            <div id="full-history-list" class="full-history-list">
+              <div class="history-empty">加载中...</div>
+            </div>
+            <div class="history-load-more-row">
+              <button id="history-load-more-btn" class="btn btn-outline" style="width:auto;padding:8px 20px;display:none">加载更多</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- 每日总结抽屉 -->
+      <div id="summary-drawer" class="summary-drawer" hidden>
+        <div class="summary-drawer-backdrop"></div>
+        <div class="summary-drawer-panel">
+          <div class="summary-drawer-header">
+            <h3>每日总结</h3>
+            <button id="summary-drawer-close" class="close-dashboard-btn" title="关闭">&times;</button>
+          </div>
+          <div id="summary-drawer-content" class="summary-drawer-body"></div>
         </div>
       </div>
     </div>

@@ -5,7 +5,7 @@ import * as path from 'path'
 export type AsrBackend = 'funasr_torch' | 'funasr_onnx_contextual' | 'funasr_onnx_paraformer'
 export type HotwordFormat = 'weighted-lines' | 'space-separated' | 'none'
 export type VadBackend = 'funasr_onnx_vad'
-export type PuncBackend = 'funasr_torch_punc'
+export type PuncBackend = 'funasr_torch_punc' | 'funasr_onnx_punc'
 
 // 模型定义
 export interface ModelInfo {
@@ -42,6 +42,10 @@ export interface ModelCheckStatus {
   downloaded: boolean
   incomplete: boolean
   dependencies: ModelDependencyStatus[]
+}
+
+export function isHotwordCapableModel(model: ModelInfo): boolean {
+  return model.hotwordFormat !== 'none'
 }
 
 const FUNASR_MODEL_ID_MAP: Record<string, string> = {
@@ -179,7 +183,7 @@ export const MODELS: ModelInfo[] = [
     vadBackend: 'funasr_onnx_vad',
     vadQuantized: true,
     puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-    puncBackend: 'funasr_torch_punc',
+    puncBackend: 'funasr_onnx_punc',
   },
   {
     id: 'paraformer-zh-contextual-quant',
@@ -194,7 +198,7 @@ export const MODELS: ModelInfo[] = [
     vadBackend: 'funasr_onnx_vad',
     vadQuantized: true,
     puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-    puncBackend: 'funasr_torch_punc',
+    puncBackend: 'funasr_onnx_punc',
   },
   {
     id: 'sensevoice-small',
@@ -208,11 +212,11 @@ export const MODELS: ModelInfo[] = [
     vadBackend: 'funasr_onnx_vad',
     vadQuantized: true,
     puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
-    puncBackend: 'funasr_torch_punc',
+    puncBackend: 'funasr_onnx_punc',
   },
 ]
 
 // 获取所有模型基本信息（不含下载状态，下载状态由 local-asr 异步查询）
 export function getModelInfoList(): ModelInfo[] {
-  return MODELS
+  return MODELS.filter(isHotwordCapableModel)
 }

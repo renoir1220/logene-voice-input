@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-PyInstaller 打包脚本 — 将 asr_server.py 打包为平台特定的单文件二进制。
+PyInstaller 打包脚本 — 将 asr_server.py 打包为平台特定目录版(sidecar onedir)可执行文件。
 
 用法：python3 python/build_sidecar.py
-输出：dist/sidecar/{mac|win|linux}/asr_server[.exe]
+输出：dist/sidecar/{mac|win|linux}/asr_server/asr_server[.exe]
 """
 
 import platform
@@ -51,7 +51,7 @@ def main():
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--onefile",
+        "--onedir",
         "--name", "asr_server",
         "--distpath", str(out_dir),
         "--workpath", str(ROOT / "build" / "sidecar_build"),
@@ -75,7 +75,8 @@ def main():
 
     print(f"执行: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
-    print(f"打包完成: {out_dir / 'asr_server'}")
+    executable_name = "asr_server.exe" if platform.system().lower() == "windows" else "asr_server"
+    print(f"打包完成: {out_dir / 'asr_server' / executable_name}")
 
 
 if __name__ == "__main__":

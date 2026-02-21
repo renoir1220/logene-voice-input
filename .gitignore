@@ -12,6 +12,10 @@ dist
 out
 dist-ssr
 *.local
+coverage/
+*.tsbuildinfo
+.vitest/
+.nyc_output/
 
 # Editor directories and files
 .vscode/*

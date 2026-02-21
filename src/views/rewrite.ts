@@ -43,7 +43,7 @@ export function initRewriteUI() {
       statusEl.textContent = '生成完成'
       replaceBtn.disabled = false
       replaceBtn.focus()
-    } catch (e: any) {
+    } catch (e: unknown) {
       statusEl.textContent = '出错'
       resultEl.value = '调用错误: ' + String(e)
     } finally {

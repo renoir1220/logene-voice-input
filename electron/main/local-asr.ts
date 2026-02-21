@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import { app } from 'electron'
 import { logger } from './logger'
-import { MODELS, ModelInfo } from './model-manager'
+import { MODELS, ModelInfo, isHotwordCapableModel } from './model-manager'
 import { getConfig } from './config'
 import { normalizeAsrText } from './asr-text'
 
@@ -27,6 +27,7 @@ export interface ModelCheckStatus {
 // sidecar 子进程
 let sidecar: ChildProcess | null = null
 let currentModelId: string | null = null
+let currentPuncEnabled: boolean | null = null
 let requestId = 0
 // 等待响应的回调表
 const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>()
@@ -148,10 +149,13 @@ function spawnSidecar(): Promise<void> {
       // 生产模式：使用 PyInstaller 打包的二进制
       const platform = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux'
       const ext = process.platform === 'win32' ? '.exe' : ''
-      cmd = path.join(process.resourcesPath, 'sidecar', platform, `asr_server${ext}`)
+      const sidecarRoot = path.join(process.resourcesPath, 'sidecar', platform, 'asr_server')
+      const oneDirExec = path.join(sidecarRoot, `asr_server${ext}`)
+      const oneFileExec = path.join(process.resourcesPath, 'sidecar', platform, `asr_server${ext}`)
+      cmd = fs.existsSync(oneDirExec) ? oneDirExec : oneFileExec
       args = []
       if (!fs.existsSync(cmd)) {
-        rejectEarly(`sidecar 可执行文件不存在: ${cmd}`)
+        rejectEarly(`sidecar 可执行文件不存在: ${oneDirExec} 或 ${oneFileExec}`)
         return
       }
       try {
@@ -206,7 +210,7 @@ function spawnSidecar(): Promise<void> {
         if (!trimmed) continue
         // 第三方库偶尔会向 stdout 输出普通文本（非协议 JSON），避免误报为解析失败。
         if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) {
-          logger.info(`sidecar stdout: ${trimmed}`)
+          logger.debug(`sidecar stdout: ${trimmed}`)
           continue
         }
         try {
@@ -226,7 +230,7 @@ function spawnSidecar(): Promise<void> {
             if ('progress' in msg && !('ok' in msg)) {
               if (typeof msg.progress === 'number') {
                 const status = typeof msg.status === 'string' ? msg.status : ''
-                logger.info(`[ASR] init progress: ${msg.progress}%${status ? `, ${status}` : ''}`)
+                logger.debug(`[ASR] init progress: ${msg.progress}%${status ? `, ${status}` : ''}`)
               }
               if (onInitProgress) {
                 onInitProgress({ progress: msg.progress, status: msg.status })
@@ -244,7 +248,7 @@ function spawnSidecar(): Promise<void> {
             }
           }
         } catch {
-          logger.warn(`sidecar stdout 解析失败: ${trimmed}`)
+          logger.debug(`sidecar stdout 解析失败: ${trimmed}`)
         }
       }
     })
@@ -257,7 +261,7 @@ function spawnSidecar(): Promise<void> {
         .map((line) => line.trim())
         .filter(Boolean)
       for (const line of lines) {
-        logger.warn(`sidecar stderr: ${line}`)
+        logger.debug(`sidecar stderr: ${line}`)
       }
     })
 
@@ -273,7 +277,7 @@ function spawnSidecar(): Promise<void> {
     child.on('exit', (code) => {
       const stderrSummary = getRecentSidecarStderr()
       const suffix = stderrSummary ? `, stderr: ${stderrSummary}` : ''
-      logger.info(`sidecar 进程退出，code=${code}`)
+      logger.debug(`sidecar 进程退出，code=${code}`)
       // 拒绝所有等待中的请求
       for (const [, cb] of pending) {
         cb.reject(new Error(`sidecar 进程意外退出 (code=${code})${suffix}`))
@@ -291,6 +295,7 @@ function spawnSidecar(): Promise<void> {
 function cleanupSidecar() {
   sidecar = null
   currentModelId = null
+  currentPuncEnabled = null
   stdoutBuffer = ''
 }
 
@@ -333,8 +338,13 @@ function collectHotwords(): string[] {
   return Array.from(allWords)
 }
 
+function isPuncEnabled(): boolean {
+  const config = getConfig()
+  return config.asr?.puncEnabled !== false
+}
+
 function getHotwordSupportedModelNames(): string[] {
-  return MODELS.filter((m) => m.hotwordFormat !== 'none').map((m) => m.name)
+  return MODELS.filter((m) => isHotwordCapableModel(m)).map((m) => m.name)
 }
 
 // 将配置中的热词构建为 sidecar 可识别字符串
@@ -366,11 +376,15 @@ export async function initLocalRecognizer(
   modelId: string,
   progressCb?: (data: { progress: number; status?: string }) => void,
 ): Promise<void> {
+  const puncEnabled = isPuncEnabled()
   // 如果已经是同一个模型，跳过
-  if (currentModelId === modelId && sidecar) return
+  if (currentModelId === modelId && sidecar && currentPuncEnabled === puncEnabled) return
 
   const modelInfo = MODELS.find(m => m.id === modelId)
   if (!modelInfo) throw new Error(`未知模型: ${modelId}`)
+  if (!isHotwordCapableModel(modelInfo)) {
+    throw new Error(`当前模型「${modelInfo.name}」不支持热词注入，不允许用于本地识别。`)
+  }
 
   // 确保 sidecar 已启动
   await spawnSidecar()
@@ -379,6 +393,9 @@ export async function initLocalRecognizer(
 
   // 按模型后端构建热词字符串
   const hotwords = buildHotwordsString(modelInfo)
+  if (!puncEnabled) {
+    logger.info('[ASR] 本地 PUNC 已关闭：将跳过标点恢复模型加载')
+  }
 
   // 设置进度回调
   onInitProgress = progressCb || null
@@ -386,7 +403,7 @@ export async function initLocalRecognizer(
   try {
     // 发送 init 命令，sidecar 会按模型后端初始化（torch / onnx）
     // 超时 10 分钟：首次可能需要下载并导出模型
-    await sendRequest({
+    const initResp = await sendRequest({
       cmd: 'init',
       modelName: modelInfo.funasrModel,
       backend: modelInfo.backend,
@@ -394,12 +411,40 @@ export async function initLocalRecognizer(
       vadModelName: modelInfo.vadModel,
       vadBackend: modelInfo.vadBackend,
       vadQuantize: Boolean(modelInfo.vadQuantized),
-      puncModelName: modelInfo.puncModel,
-      puncBackend: modelInfo.puncBackend,
+      usePunc: puncEnabled,
+      puncModelName: puncEnabled ? modelInfo.puncModel : '',
+      puncBackend: puncEnabled ? modelInfo.puncBackend : '',
       hotwords,
     }, 600000)
+
+    const hs = initResp?.hotwordStats
+    if (hs && typeof hs === 'object') {
+      const backend = typeof hs.backend === 'string' ? hs.backend : modelInfo.backend
+      const configured = Number.isFinite(Number(hs.configuredCount)) ? Number(hs.configuredCount) : 0
+      const verified = Boolean(hs.verified)
+      const mode = typeof hs.mode === 'string' ? hs.mode : 'unknown'
+      const accepted = Number.isFinite(Number(hs.modelAcceptedCount))
+        ? Number(hs.modelAcceptedCount)
+        : null
+      const normalized = Number.isFinite(Number(hs.normalizedCount))
+        ? Number(hs.normalizedCount)
+        : null
+      const verifyError = typeof hs.verifyError === 'string' ? hs.verifyError : ''
+
+      logger.debug(
+        `[ASR] 热词模型状态: backend=${backend}, configured=${configured}, ` +
+        `normalized=${normalized ?? 'n/a'}, accepted=${accepted ?? 'n/a'}, ` +
+        `verified=${verified}, mode=${mode}`,
+      )
+      if (verifyError) {
+        logger.warn(`[ASR] 热词模型校验异常: ${verifyError}`)
+      }
+    } else {
+      logger.debug('[ASR] 热词模型状态: sidecar 未返回 hotwordStats')
+    }
   } catch (e) {
     currentModelId = null
+    currentPuncEnabled = null
     const detail = e instanceof Error ? e.message : String(e)
     logger.error(`[ASR] 本地模型初始化失败(${modelInfo.name}): ${detail}`)
     // 初始化失败后主动重置 sidecar，避免残留进程或半初始化状态影响后续识别。
@@ -411,6 +456,7 @@ export async function initLocalRecognizer(
   }
 
   currentModelId = modelId
+  currentPuncEnabled = puncEnabled
   logger.info(`本地模型 ${modelInfo.name} 加载完成`)
 }
 
@@ -426,10 +472,10 @@ export async function recognizeLocal(wavBuffer: Buffer): Promise<string> {
   }, 120000)
 
   if (typeof resp?.segmentCount === 'number') {
-    logger.info(`[ASR] sidecar stats: segmentCount=${resp.segmentCount}, asrPasses=${resp?.asrPasses ?? '?'}`)
+    logger.debug(`[ASR] sidecar stats: segmentCount=${resp.segmentCount}, asrPasses=${resp?.asrPasses ?? '?'}`)
   }
   if (typeof resp?.rawText === 'string') {
-    logger.info(`[ASR] sidecar rawText: "${resp.rawText}"`)
+    logger.debug(`[ASR] sidecar rawText: "${resp.rawText}"`)
   }
   const text = normalizeAsrText(resp?.text)
   logger.info(`本地识别结果: "${text}"`)
@@ -447,8 +493,13 @@ export async function checkModelStatus(modelId: string): Promise<ModelCheckStatu
   if (!modelInfo) {
     return { downloaded: false, incomplete: false, dependencies: [] }
   }
+  if (!isHotwordCapableModel(modelInfo)) {
+    logger.error(`[ASR] 模型 ${modelInfo.name} 不支持热词注入，拒绝检查状态`)
+    return { downloaded: false, incomplete: false, dependencies: [] }
+  }
 
   await spawnSidecar()
+  const puncEnabled = isPuncEnabled()
 
   try {
     const resp = await sendRequest({
@@ -459,8 +510,9 @@ export async function checkModelStatus(modelId: string): Promise<ModelCheckStatu
       vadModelName: modelInfo.vadModel,
       vadBackend: modelInfo.vadBackend,
       vadQuantize: Boolean(modelInfo.vadQuantized),
-      puncModelName: modelInfo.puncModel,
-      puncBackend: modelInfo.puncBackend,
+      usePunc: puncEnabled,
+      puncModelName: puncEnabled ? modelInfo.puncModel : '',
+      puncBackend: puncEnabled ? modelInfo.puncBackend : '',
     }, 10000)
     return {
       downloaded: Boolean(resp.downloaded),
@@ -491,4 +543,5 @@ export function disposeLocalRecognizer(): void {
     logger.info('本地识别器已释放')
   }
   currentModelId = null
+  currentPuncEnabled = null
 }
