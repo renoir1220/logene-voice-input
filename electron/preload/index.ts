@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   restoreFocus: (appId: string | null) => ipcRenderer.invoke('restore-focus', appId),
   getVadEnabled: () => ipcRenderer.invoke('get-vad-enabled'),
   setVadEnabled: (enabled: boolean) => ipcRenderer.invoke('set-vad-enabled', enabled),
+  getAsrRuntimeStatus: () => ipcRenderer.invoke('get-asr-runtime-status'),
   recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) =>
     ipcRenderer.invoke('recognize-wav', wavBuffer, prevAppId),
   switchMode: (mode: 'float' | 'dashboard') => ipcRenderer.invoke('switch-mode', mode),
@@ -26,6 +27,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLogs: () => ipcRenderer.invoke('get-logs'),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
   copyToClipboard: (text: string) => ipcRenderer.invoke('copy-to-clipboard', text),
+  reportRendererError: (payload: {
+    kind: string
+    message: string
+    stack?: string
+    source?: string
+    lineno?: number
+    colno?: number
+    reason?: string
+  }) => ipcRenderer.invoke('report-renderer-error', payload),
 
   // 重写专用通道
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),
@@ -42,6 +52,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onToggleVad: (cb: (enabled: boolean) => void) => {
     ipcRenderer.on('toggle-vad', (_e, enabled) => cb(Boolean(enabled)))
+  },
+  onAsrRuntimeStatus: (cb: (status: {
+    phase: 'idle' | 'starting' | 'ready' | 'error'
+    modelId: string | null
+    progress: number
+    message: string
+    updatedAt: string
+  }) => void) => {
+    ipcRenderer.on('asr-runtime-status', (_e, status) => cb(status))
   },
   // 热键触发停止录音（toggle 模式）
   onHotkeyStopRecording: (cb: (prevAppId: string | null) => void) => {

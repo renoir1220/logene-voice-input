@@ -11,6 +11,7 @@ import {
   shell,
   systemPreferences,
   clipboard,
+  IpcMainInvokeEvent,
 } from 'electron'
 import * as path from 'path'
 import { exec } from 'child_process'
@@ -39,17 +40,177 @@ let permissionWarned = false
 let permissionCheckInFlight = false
 let hotkeysRegistered = false
 let lastPermissionCheckAt = 0
+let processErrorHooksRegistered = false
 // 记录悬浮球当前物理坐标（确保收起时回到原位）
 let floatPos = { x: 0, y: 0 }
 const FLOAT_WIDTH = 116
 const FLOAT_HEIGHT = 46
 const VAD_TOGGLE_HOTKEY = 'Alt+Shift+V'
 const PERMISSION_CHECK_INTERVAL_MS = 30_000
+const DEFAULT_LOCAL_MODEL_ID = 'paraformer-zh-contextual-quant'
+
+type AsrRuntimePhase = 'idle' | 'starting' | 'ready' | 'error'
+interface AsrRuntimeStatus {
+  phase: AsrRuntimePhase
+  modelId: string | null
+  progress: number
+  message: string
+  updatedAt: string
+}
+
+let asrRuntimeStatus: AsrRuntimeStatus = {
+  phase: 'idle',
+  modelId: null,
+  progress: 0,
+  message: '',
+  updatedAt: new Date().toISOString(),
+}
+let localAsrInitPromise: Promise<void> | null = null
+let localAsrInitModelId: string | null = null
 
 interface PermissionIssue {
   id: 'microphone' | 'accessibility' | 'automation'
   title: string
   guide: string
+}
+
+function stringifyErrorLike(value: unknown): string {
+  if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function attachWebContentsDiagnostics(win: BrowserWindow, name: string) {
+  win.webContents.on('preload-error', (_event, preloadPath, error) => {
+    logger.error(`[Window:${name}] preload-error path=${preloadPath} err=${stringifyErrorLike(error)}`)
+  })
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level < 2) return
+    const text = `[Window:${name}] console level=${level} ${sourceId || 'unknown'}:${line} ${message}`
+    if (level >= 3) logger.error(text)
+    else logger.warn(text)
+  })
+  win.webContents.on('render-process-gone', (_event, details) => {
+    logger.error(`[Window:${name}] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+  win.webContents.on('did-fail-load', (_event, code, desc, url) => {
+    logger.error(`[Window:${name}] did-fail-load code=${code} desc=${desc} url=${url}`)
+  })
+}
+
+function registerProcessErrorHooks() {
+  if (processErrorHooksRegistered) return
+  processErrorHooksRegistered = true
+  process.on('uncaughtException', (error) => {
+    logger.error(`[Main] uncaughtException: ${stringifyErrorLike(error)}`)
+  })
+  process.on('unhandledRejection', (reason) => {
+    logger.error(`[Main] unhandledRejection: ${stringifyErrorLike(reason)}`)
+  })
+  app.on('child-process-gone', (_event, details) => {
+    logger.error(
+      `[App] child-process-gone type=${details.type} reason=${details.reason} ` +
+      `exitCode=${details.exitCode} name=${details.name ?? 'unknown'} service=${details.serviceName ?? 'unknown'}`,
+    )
+  })
+}
+
+function emitAsrRuntimeStatus() {
+  mainWindow?.webContents.send('asr-runtime-status', asrRuntimeStatus)
+  dashboardWindow?.webContents.send('asr-runtime-status', asrRuntimeStatus)
+}
+
+function setAsrRuntimeStatus(next: Partial<AsrRuntimeStatus>) {
+  asrRuntimeStatus = {
+    ...asrRuntimeStatus,
+    ...next,
+    updatedAt: new Date().toISOString(),
+  }
+  emitAsrRuntimeStatus()
+}
+
+async function ensureLocalRecognizerReady(reason: string): Promise<void> {
+  const cfg = getConfig()
+  const mode = cfg.asr?.mode ?? 'api'
+  if (mode !== 'local') {
+    setAsrRuntimeStatus({
+      phase: 'idle',
+      modelId: null,
+      progress: 0,
+      message: '当前为远程识别模式',
+    })
+    return
+  }
+
+  const modelId = cfg.asr?.localModel || DEFAULT_LOCAL_MODEL_ID
+  if (asrRuntimeStatus.phase === 'ready' && asrRuntimeStatus.modelId === modelId && !localAsrInitPromise) {
+    return
+  }
+
+  if (localAsrInitPromise) {
+    if (localAsrInitModelId === modelId) {
+      await localAsrInitPromise
+      return
+    }
+    try {
+      await localAsrInitPromise
+    } catch {
+      // ignore previous init failure and continue with current target model
+    }
+  }
+
+  localAsrInitModelId = modelId
+  setAsrRuntimeStatus({
+    phase: 'starting',
+    modelId,
+    progress: 0,
+    message: '正在启动本地识别...',
+  })
+
+  localAsrInitPromise = initLocalRecognizer(modelId, (data) => {
+    const progress = typeof data.progress === 'number'
+      ? Math.max(0, Math.min(100, Math.round(data.progress)))
+      : asrRuntimeStatus.progress
+    const status = typeof data.status === 'string' && data.status.trim()
+      ? data.status.trim()
+      : `正在启动本地识别${progress > 0 ? ` (${progress}%)` : '...'}`
+    setAsrRuntimeStatus({
+      phase: 'starting',
+      modelId,
+      progress,
+      message: status,
+    })
+  })
+    .then(() => {
+      setAsrRuntimeStatus({
+        phase: 'ready',
+        modelId,
+        progress: 100,
+        message: '本地识别已就绪',
+      })
+      logger.info(`[ASR] 本地识别已就绪(model=${modelId}, reason=${reason})`)
+    })
+    .catch((e) => {
+      const detail = e instanceof Error ? e.message : String(e)
+      setAsrRuntimeStatus({
+        phase: 'error',
+        modelId,
+        progress: 0,
+        message: detail,
+      })
+      logger.error(`[ASR] 本地识别启动失败(model=${modelId}, reason=${reason}): ${detail}`)
+      throw e
+    })
+    .finally(() => {
+      localAsrInitPromise = null
+      localAsrInitModelId = null
+    })
+
+  await localAsrInitPromise
 }
 
 async function canControlSystemEvents(): Promise<boolean> {
@@ -254,6 +415,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
+  attachWebContentsDiagnostics(mainWindow, 'main')
 
   // 开发模式加载 vite dev server，生产模式加载打包文件
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -273,12 +435,7 @@ function createWindow() {
   })
   mainWindow.webContents.on('did-finish-load', () => {
     logger.info('[Window] did-finish-load')
-  })
-  mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
-    logger.error(`[Window] did-fail-load code=${code} desc=${desc} url=${url}`)
-  })
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    logger.error(`[Window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+    emitAsrRuntimeStatus()
   })
   setTimeout(() => {
     if (mainWindow && !mainWindow.isVisible()) {
@@ -482,18 +639,32 @@ function setupIpc() {
   const config = getConfig()
   vadEnabled = Boolean(config.vad?.enabled)
 
-  ipcMain.handle('get-config', () => getConfig())
-  ipcMain.handle('get-frontmost-app', async () => {
+  const handle = (
+    channel: string,
+    fn: (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>,
+  ) => {
+    ipcMain.handle(channel, async (event, ...args) => {
+      try {
+        return await fn(event, ...args)
+      } catch (e) {
+        logger.error(`[IPC:${channel}] ${stringifyErrorLike(e)}`)
+        throw e
+      }
+    })
+  }
+
+  handle('get-config', () => getConfig())
+  handle('get-frontmost-app', async () => {
     return focusController.captureSnapshot('ipc-get-frontmost')
   })
-  ipcMain.handle('capture-focus-snapshot', async (_event, reason: string | undefined) => {
+  handle('capture-focus-snapshot', async (_event, reason: string | undefined) => {
     return focusController.captureSnapshot(reason ? `ipc-capture:${reason}` : 'ipc-capture')
   })
-  ipcMain.handle('restore-focus', async (_event, appId: string | null) => {
+  handle('restore-focus', async (_event, appId: string | null) => {
     await focusController.restore(appId, 'ipc-restore')
   })
 
-  ipcMain.handle('save-config', (_event, cfg: AppConfig) => {
+  handle('save-config', (_event, cfg: AppConfig) => {
     const current = getConfig()
     // 统一状态入口：普通配置保存不修改 vad.enabled，仅由 set-vad-enabled 控制
     const merged: AppConfig = {
@@ -510,16 +681,48 @@ function setupIpc() {
     }
     saveConfig(merged)
     updateTrayMenu()
+    if ((merged.asr?.mode ?? 'api') === 'local') {
+      void ensureLocalRecognizerReady('config-save').catch(() => { /* surfaced by runtime status */ })
+    } else {
+      setAsrRuntimeStatus({
+        phase: 'idle',
+        modelId: null,
+        progress: 0,
+        message: '当前为远程识别模式',
+      })
+    }
   })
 
-  ipcMain.handle('get-vad-enabled', () => vadEnabled)
+  handle('get-vad-enabled', () => vadEnabled)
 
-  ipcMain.handle('set-vad-enabled', (_event, enabled: boolean) => {
+  handle('set-vad-enabled', (_event, enabled: boolean) => {
     return setVadEnabledState(Boolean(enabled))
   })
 
+  handle('get-asr-runtime-status', () => asrRuntimeStatus)
+
+  handle('report-renderer-error', (_event, payload: unknown) => {
+    const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
+    const kind = typeof data.kind === 'string' ? data.kind : 'unknown'
+    const message = typeof data.message === 'string' ? data.message : ''
+    const source = typeof data.source === 'string' ? data.source : ''
+    const line = typeof data.lineno === 'number' ? data.lineno : 0
+    const col = typeof data.colno === 'number' ? data.colno : 0
+    const reason = typeof data.reason === 'string' ? data.reason : ''
+    const stack = typeof data.stack === 'string' ? data.stack : ''
+
+    logger.error(
+      `[Renderer] kind=${kind} message=${message || 'unknown'} ` +
+      `source=${source || 'unknown'} line=${line} col=${col} reason=${reason || ''}`.trim(),
+    )
+    if (stack) {
+      logger.error(`[Renderer] stack: ${stack}`)
+    }
+    return true
+  })
+
   // 独立的 Dashboard 设置窗体控制
-  ipcMain.handle('open-dashboard', () => {
+  handle('open-dashboard', () => {
     if (dashboardWindow) {
       if (dashboardWindow.isMinimized()) dashboardWindow.restore()
       dashboardWindow.show()
@@ -537,12 +740,16 @@ function setupIpc() {
         nodeIntegration: false,
       },
     })
+    attachWebContentsDiagnostics(dashboardWindow, 'dashboard')
 
     if (process.env.ELECTRON_RENDERER_URL) {
       dashboardWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}#/dashboard`)
     } else {
       dashboardWindow.loadFile(path.join(__dirname, '../renderer/index.html'), { hash: 'dashboard' })
     }
+    dashboardWindow.webContents.on('did-finish-load', () => {
+      emitAsrRuntimeStatus()
+    })
 
     dashboardWindow.on('closed', () => {
       dashboardWindow = null
@@ -550,7 +757,7 @@ function setupIpc() {
   })
 
   // 渲染进程完成录音，发来 WAV ArrayBuffer，主进程负责 ASR + 输入
-  ipcMain.handle('recognize-wav', async (_event, wavBuffer: ArrayBuffer, prevAppId: string | null) => {
+  handle('recognize-wav', async (_event, wavBuffer: ArrayBuffer, prevAppId: string | null) => {
     const reqId = ++asrRequestSeq
     const cfg = getConfig()
     const buf = Buffer.from(wavBuffer)
@@ -558,11 +765,10 @@ function setupIpc() {
     logger.info(`[ASR#${reqId}] 收到 WAV，大小 ${buf.byteLength} 字节，模式: ${asrMode}`)
 
     let rawText: unknown
-    let localModelId = cfg.asr?.localModel ?? 'paraformer-zh-contextual-quant'
     try {
       if (asrMode === 'local') {
         // 本地模型识别
-        await initLocalRecognizer(localModelId)
+        await ensureLocalRecognizerReady(`recognize#${reqId}`)
         rawText = await recognizeLocal(buf)
       } else {
         // 远程 API 识别
@@ -595,25 +801,35 @@ function setupIpc() {
   })
 
   // ── 模型管理 IPC ──
-  ipcMain.handle('get-model-statuses', async () => {
-    const models = getModelInfoList()
-    if (!Array.isArray(models) || models.length === 0) {
-      logger.warn('[Model] get-model-statuses: 模型列表为空')
-      return []
+  handle('get-model-statuses', async () => {
+    const startedAt = Date.now()
+    try {
+      const models = getModelInfoList()
+      if (!Array.isArray(models) || models.length === 0) {
+        logger.warn('[Model] get-model-statuses: 模型列表为空')
+        return []
+      }
+      const results = models.map((m) => {
+        const status = inspectLocalModelStatus(m)
+        return { ...m, downloaded: status.downloaded, incomplete: status.incomplete, dependencies: status.dependencies }
+      })
+      logger.info(`[Model] get-model-statuses done: count=${results.length}, cost=${Date.now() - startedAt}ms`)
+      return results
+    } catch (e) {
+      logger.error(`[Model] get-model-statuses failed: ${e instanceof Error ? (e.stack || e.message) : String(e)}`)
+      throw e
     }
-    const results = models.map((m) => {
-      const status = inspectLocalModelStatus(m)
-      return { ...m, downloaded: status.downloaded, incomplete: status.incomplete, dependencies: status.dependencies }
-    })
-    return results
   })
 
-  ipcMain.handle('get-model-catalog', () => {
+  handle('get-model-catalog', () => {
+    const startedAt = Date.now()
     const models = getModelInfoList()
-    return Array.isArray(models) ? models : []
+    const result = Array.isArray(models) ? models : []
+    logger.info(`[Model] get-model-catalog done: count=${result.length}, cost=${Date.now() - startedAt}ms`)
+    return result
   })
 
-  ipcMain.handle('download-model', async (_event, modelId: string) => {
+  handle('download-model', async (_event, modelId: string) => {
     logger.info(`准备模型: ${modelId}`)
     const sendProgress = (data: { progress: number; status?: string }) => {
       const msg = { modelId, percent: data.progress, status: data.status }
@@ -623,6 +839,15 @@ function setupIpc() {
     sendProgress({ progress: 0, status: '启动中...' })
     try {
       await initLocalRecognizer(modelId, sendProgress)
+      const cfg = getConfig()
+      if ((cfg.asr?.mode ?? 'api') === 'local' && (cfg.asr?.localModel ?? DEFAULT_LOCAL_MODEL_ID) === modelId) {
+        setAsrRuntimeStatus({
+          phase: 'ready',
+          modelId,
+          progress: 100,
+          message: '本地识别已就绪',
+        })
+      }
       return { success: true }
     } catch (e) {
       logger.error(`模型准备失败(modelId=${modelId}): ${e instanceof Error ? (e.stack || e.message) : String(e)}`)
@@ -630,21 +855,21 @@ function setupIpc() {
     }
   })
 
-  ipcMain.handle('delete-model', (_event, _modelId: string) => {
+  handle('delete-model', (_event, _modelId: string) => {
     // FunASR 模型由 ModelScope 缓存管理，不再手动删除
     logger.info('FunASR 模型由 ModelScope 缓存管理，如需清理请手动删除 ~/.cache/modelscope')
   })
 
   // ── 日志 IPC ──
-  ipcMain.handle('get-logs', () => getLogBuffer())
-  ipcMain.handle('clear-logs', () => clearLogs())
-  ipcMain.handle('copy-to-clipboard', (_event, text: string) => {
+  handle('get-logs', () => getLogBuffer())
+  handle('clear-logs', () => clearLogs())
+  handle('copy-to-clipboard', (_event, text: string) => {
     clipboard.writeText(String(text ?? ''))
     return true
   })
 
-  ipcMain.handle('get-window-position', () => mainWindow?.getPosition() || [0, 0])
-  ipcMain.handle('set-window-position', (_event, x: number, y: number) => {
+  handle('get-window-position', () => mainWindow?.getPosition() || [0, 0])
+  handle('set-window-position', (_event, x: number, y: number) => {
     if (mainWindow) {
       mainWindow.setPosition(Math.round(x), Math.round(y), false)
       if (mainWindow.getSize()[0] === FLOAT_WIDTH) {
@@ -655,6 +880,8 @@ function setupIpc() {
 }
 
 // ── 应用生命周期 ──
+
+registerProcessErrorHooks()
 
 app.whenReady().then(async () => {
   // 初始化日志，推送到渲染进程
@@ -687,6 +914,19 @@ app.whenReady().then(async () => {
     logger.warn('[Startup] 权限未就绪，热键与焦点控制功能暂停。请授权后重启应用。')
   }
   logger.info('[Startup] ready')
+
+  if ((getConfig().asr?.mode ?? 'api') === 'local') {
+    void ensureLocalRecognizerReady('startup').catch(() => {
+      // surfaced to renderer via asr-runtime-status
+    })
+  } else {
+    setAsrRuntimeStatus({
+      phase: 'idle',
+      modelId: null,
+      progress: 0,
+      message: '当前为远程识别模式',
+    })
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

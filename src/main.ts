@@ -11,6 +11,7 @@ declare global {
       restoreFocus: (appId: string | null) => Promise<void>
       getVadEnabled: () => Promise<boolean>
       setVadEnabled: (enabled: boolean) => Promise<boolean>
+      getAsrRuntimeStatus: () => Promise<AsrRuntimeStatus>
       recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) => Promise<string>
       openDashboard: () => Promise<void>
       getWindowPosition: () => Promise<[number, number]>
@@ -27,9 +28,19 @@ declare global {
       getLogs: () => Promise<LogEntry[]>
       clearLogs: () => Promise<void>
       copyToClipboard: (text: string) => Promise<boolean>
+      reportRendererError: (payload: {
+        kind: string
+        message: string
+        stack?: string
+        source?: string
+        lineno?: number
+        colno?: number
+        reason?: string
+      }) => Promise<boolean>
       onHotkeyState: (cb: (state: string) => void) => void
       onHotkeyResult: (cb: (result: string) => void) => void
       onToggleVad: (cb: (enabled: boolean) => void) => void
+      onAsrRuntimeStatus: (cb: (status: AsrRuntimeStatus) => void) => void
       onHotkeyStopRecording: (cb: (prevAppId: string | null) => void) => void
       onModelDownloadProgress: (cb: (data: { modelId: string; percent: number; status?: string }) => void) => void
       onLogEntry: (cb: (entry: LogEntry) => void) => void
@@ -82,6 +93,14 @@ interface LogEntry {
   msg: string
 }
 
+interface AsrRuntimeStatus {
+  phase: 'idle' | 'starting' | 'ready' | 'error'
+  modelId: string | null
+  progress: number
+  message: string
+  updatedAt: string
+}
+
 // 配置类型（与主进程保持一致）
 interface AppConfig {
   server: { url: string; asrConfigId: string }
@@ -107,6 +126,76 @@ let errorTimer: ReturnType<typeof setTimeout> | null = null
 let floatCapsuleView: HTMLDivElement
 let mainDashboardView: HTMLDivElement
 let currentMode: 'float' | 'dashboard' = 'float'
+let rendererErrorHooksInstalled = false
+let asrRuntimeStatus: AsrRuntimeStatus = {
+  phase: 'idle',
+  modelId: null,
+  progress: 0,
+  message: '',
+  updatedAt: '',
+}
+let lastAsrRuntimeError = ''
+
+function toShortErrorText(value: unknown): string {
+  if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function reportRendererError(payload: {
+  kind: string
+  message: string
+  stack?: string
+  source?: string
+  lineno?: number
+  colno?: number
+  reason?: string
+}) {
+  void window.electronAPI.reportRendererError(payload).catch(() => {
+    // avoid recursive noise when IPC channel itself fails
+  })
+}
+
+function installRendererErrorHooks() {
+  if (rendererErrorHooksInstalled) return
+  rendererErrorHooksInstalled = true
+
+  const originalConsoleError = console.error.bind(console)
+  console.error = (...args: unknown[]) => {
+    originalConsoleError(...args)
+    const message = args.map((item) => toShortErrorText(item)).join(' ').slice(0, 4000)
+    reportRendererError({
+      kind: 'console.error',
+      message: message || 'console.error called with empty args',
+    })
+  }
+
+  window.addEventListener('error', (event) => {
+    const err = event.error
+    reportRendererError({
+      kind: 'window.error',
+      message: err instanceof Error ? err.message : (event.message || 'unknown error'),
+      stack: err instanceof Error ? err.stack : '',
+      source: event.filename || '',
+      lineno: event.lineno || 0,
+      colno: event.colno || 0,
+    })
+  })
+
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason
+    reportRendererError({
+      kind: 'window.unhandledrejection',
+      message: reason instanceof Error ? reason.message : 'Unhandled promise rejection',
+      stack: reason instanceof Error ? reason.stack : '',
+      reason: toShortErrorText(reason).slice(0, 4000),
+    })
+  })
+}
 
 // ── 录音相关 ──
 
@@ -381,6 +470,60 @@ function showResult(text: string) {
   }
 }
 
+function applyAsrRuntimeStatus(status: AsrRuntimeStatus) {
+  asrRuntimeStatus = status
+  if (state !== 'idle') return
+
+  if (status.phase === 'starting') {
+    const suffix = status.progress > 0 ? ` (${status.progress}%)` : ''
+    setState('idle', `正在启动${suffix}`)
+    return
+  }
+
+  if (status.phase === 'error') {
+    const msg = status.message || '本地识别启动失败'
+    setState('idle', '启动失败')
+    if (msg !== lastAsrRuntimeError) {
+      lastAsrRuntimeError = msg
+      showError(`本地识别启动失败：${msg}`)
+    }
+    return
+  }
+
+  lastAsrRuntimeError = ''
+  if (status.phase === 'ready') {
+    setState('idle', '就绪')
+  }
+}
+
+async function refreshAsrRuntimeStatus() {
+  try {
+    const status = await window.electronAPI.getAsrRuntimeStatus()
+    applyAsrRuntimeStatus(status)
+  } catch (e) {
+    console.warn('[ASR] getAsrRuntimeStatus failed:', e)
+  }
+}
+
+async function ensureAsrReadyBeforeCapture(): Promise<boolean> {
+  let cfg: AppConfig | null = null
+  try {
+    cfg = await window.electronAPI.getConfig()
+  } catch {
+    return true
+  }
+  if ((cfg.asr?.mode ?? 'api') !== 'local') return true
+
+  if (asrRuntimeStatus.phase !== 'ready') {
+    const suffix = asrRuntimeStatus.progress > 0 ? ` (${asrRuntimeStatus.progress}%)` : ''
+    const msg = asrRuntimeStatus.message || `本地识别正在启动${suffix}`
+    setState('idle', `正在启动${suffix}`)
+    showError(msg)
+    return false
+  }
+  return true
+}
+
 // ── 录音按钮点击 ──
 
 async function onRecordClick() {
@@ -391,6 +534,7 @@ async function onRecordClick() {
   }
 
   if (state === 'idle') {
+    if (!await ensureAsrReadyBeforeCapture()) return
     try {
       uiTrace('record-click.start-capture.begin')
       if (!focusSnapshotAppId) {
@@ -417,17 +561,10 @@ async function onRecordClick() {
       }
       const wav = stopCapture()
       console.log('[识别] 发送 WAV 到主进程，大小:', wav.byteLength)
-      // 30 秒超时保护，防止 fetch 挂住导致永远卡在识别中
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('识别超时（30s）')), 30000),
-      )
       const prevAppId = focusSnapshotAppId
       focusSnapshotAppId = null
       uiTrace('record-click.stop-capture.begin-recognize', { wavBytes: wav.byteLength, prevAppId })
-      const result = await Promise.race([
-        window.electronAPI.recognizeWav(wav, prevAppId),
-        timeout,
-      ])
+      const result = await window.electronAPI.recognizeWav(wav, prevAppId)
       console.log('[识别] 结果:', result)
       uiTrace('record-click.stop-capture.result', { result })
       setState('idle')
@@ -557,8 +694,11 @@ async function loadConfigToForm() {
       ; (document.getElementById('asr-mode-api') as HTMLInputElement).checked = asrMode === 'api'
       ; (document.getElementById('asr-mode-local') as HTMLInputElement).checked = asrMode === 'local'
     updateAsrModeUI(asrMode)
-    await renderModelList(cfg.asr?.localModel)
-  } catch (_) { }
+    await withTimeout(renderModelList(cfg.asr?.localModel), 8000, 'render-model-list')
+  } catch (e) {
+    console.error('[Dashboard] loadConfigToForm failed:', e)
+    setModelListHint(`初始化失败：${String(e)}`, true)
+  }
 }
 
 async function renderCommandList() {
@@ -911,6 +1051,25 @@ function mapCatalogToStatuses(catalog: ModelCatalogItem[]): ModelStatus[] {
   }))
 }
 
+function mergeStatusesById(base: ModelStatus[], statuses: ModelStatus[]): ModelStatus[] {
+  const map = new Map<string, ModelStatus>()
+  for (const status of statuses) {
+    if (status && typeof status.id === 'string') {
+      map.set(status.id, status)
+    }
+  }
+  return base.map((item) => {
+    const status = map.get(item.id)
+    if (!status) return item
+    return {
+      ...item,
+      downloaded: Boolean(status.downloaded),
+      incomplete: Boolean(status.incomplete),
+      dependencies: Array.isArray(status.dependencies) ? status.dependencies : [],
+    }
+  })
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timeout (${timeoutMs}ms)`)), timeoutMs)
@@ -927,16 +1086,94 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   })
 }
 
-async function fetchModelStatusesWithFallback(): Promise<{ models: ModelStatus[]; fallbackUsed: boolean }> {
-  const statuses = await withTimeout(window.electronAPI.getModelStatuses(), 4000, 'get-model-statuses')
-  if (Array.isArray(statuses) && statuses.length > 0) {
-    return { models: statuses, fallbackUsed: false }
+function renderModelCards(container: HTMLElement, models: ModelStatus[]) {
+  container.innerHTML = ''
+  for (const m of models) {
+    const item = document.createElement('div')
+    item.className = 'model-item' + (m.id === currentSelectedModel ? ' active' : '')
+
+    const info = document.createElement('div')
+    info.className = 'model-info'
+    info.innerHTML = `<div class="model-name">${m.name}</div><div class="model-desc">${m.description}</div><div class="model-size">${m.size}</div>`
+    if (m.incomplete) {
+      const broken = getBrokenDeps(m)
+      if (broken.length > 0) {
+        const note = document.createElement('div')
+        note.className = 'model-integrity-note'
+        note.textContent = `不完整项：${broken.map((d) => `${d.role}(${d.issue})`).join('；')}`
+        info.appendChild(note)
+      }
+    }
+
+    const actions = document.createElement('div')
+    actions.className = 'model-actions'
+
+    if (m.incomplete) {
+      const status = document.createElement('span')
+      status.className = 'model-status model-status-warn'
+      status.textContent = '下载不完整'
+      actions.appendChild(status)
+
+      const retryBtn = document.createElement('button')
+      retryBtn.className = 'btn-sm btn-sm-primary'
+      retryBtn.textContent = '重新下载'
+      retryBtn.id = `dl-btn-${m.id}`
+      retryBtn.addEventListener('click', () => downloadModelUI(m.id))
+      actions.appendChild(retryBtn)
+
+      const progress = document.createElement('span')
+      progress.className = 'model-progress'
+      progress.id = `dl-progress-${m.id}`
+      actions.appendChild(progress)
+
+      const delBtn = document.createElement('button')
+      delBtn.className = 'btn-sm btn-sm-danger'
+      delBtn.textContent = '删除'
+      delBtn.addEventListener('click', () => deleteModelUI(m.id))
+      actions.appendChild(delBtn)
+    } else if (m.downloaded) {
+      const status = document.createElement('span')
+      status.className = 'model-status'
+      status.textContent = '已下载'
+      actions.appendChild(status)
+
+      if (m.id !== currentSelectedModel) {
+        const selectBtn = document.createElement('button')
+        selectBtn.className = 'btn-sm btn-sm-select'
+        selectBtn.textContent = '使用'
+        selectBtn.addEventListener('click', () => selectModel(m.id))
+        actions.appendChild(selectBtn)
+      } else {
+        const badge = document.createElement('span')
+        badge.className = 'model-status'
+        badge.textContent = '当前'
+        badge.style.color = '#0ea5e9'
+        actions.appendChild(badge)
+      }
+
+      const delBtn = document.createElement('button')
+      delBtn.className = 'btn-sm btn-sm-danger'
+      delBtn.textContent = '删除'
+      delBtn.addEventListener('click', () => deleteModelUI(m.id))
+      actions.appendChild(delBtn)
+    } else {
+      const dlBtn = document.createElement('button')
+      dlBtn.className = 'btn-sm btn-sm-primary'
+      dlBtn.textContent = '准备模型'
+      dlBtn.id = `dl-btn-${m.id}`
+      dlBtn.addEventListener('click', () => downloadModelUI(m.id))
+      actions.appendChild(dlBtn)
+
+      const progress = document.createElement('span')
+      progress.className = 'model-progress'
+      progress.id = `dl-progress-${m.id}`
+      actions.appendChild(progress)
+    }
+
+    item.appendChild(info)
+    item.appendChild(actions)
+    container.appendChild(item)
   }
-  const catalog = await withTimeout(window.electronAPI.getModelCatalog(), 2000, 'get-model-catalog')
-  if (Array.isArray(catalog) && catalog.length > 0) {
-    return { models: mapCatalogToStatuses(catalog), fallbackUsed: true }
-  }
-  return { models: [], fallbackUsed: true }
 }
 
 async function renderModelList(selectedModel?: string) {
@@ -946,103 +1183,38 @@ async function renderModelList(selectedModel?: string) {
   container.innerHTML = ''
   setModelListHint('正在加载模型列表...')
   try {
-    const { models, fallbackUsed } = await fetchModelStatusesWithFallback()
-    if (models.length === 0) {
+    const catalog = await withTimeout(window.electronAPI.getModelCatalog(), 2000, 'get-model-catalog')
+    if (!Array.isArray(catalog) || catalog.length === 0) {
       updateModelIntegrityIndicators([])
       setModelListHint('模型列表加载失败，请重试。', true)
       return
     }
+
+    const baseModels = mapCatalogToStatuses(catalog)
+    updateModelIntegrityIndicators([])
+    renderModelCards(container, baseModels)
+    setModelListHint('正在检查本地模型状态...')
+
+    let finalModels = baseModels
+    let fallbackUsed = false
+    try {
+      const statuses = await withTimeout(window.electronAPI.getModelStatuses(), 4000, 'get-model-statuses')
+      if (Array.isArray(statuses) && statuses.length > 0) {
+        finalModels = mergeStatusesById(baseModels, statuses)
+      } else {
+        fallbackUsed = true
+      }
+    } catch (e) {
+      fallbackUsed = true
+      console.warn('[Model] get-model-statuses failed:', e)
+    }
+
+    updateModelIntegrityIndicators(finalModels)
+    renderModelCards(container, finalModels)
     if (fallbackUsed) {
       setModelListHint('模型状态读取失败，已显示基础模型列表。你仍可点击“准备模型”继续。', true)
     } else {
       setModelListHint('')
-    }
-    updateModelIntegrityIndicators(models)
-    for (const m of models) {
-      const item = document.createElement('div')
-      item.className = 'model-item' + (m.id === currentSelectedModel ? ' active' : '')
-
-      const info = document.createElement('div')
-      info.className = 'model-info'
-      info.innerHTML = `<div class="model-name">${m.name}</div><div class="model-desc">${m.description}</div><div class="model-size">${m.size}</div>`
-      if (m.incomplete) {
-        const broken = getBrokenDeps(m)
-        if (broken.length > 0) {
-          const note = document.createElement('div')
-          note.className = 'model-integrity-note'
-          note.textContent = `不完整项：${broken.map((d) => `${d.role}(${d.issue})`).join('；')}`
-          info.appendChild(note)
-        }
-      }
-
-      const actions = document.createElement('div')
-      actions.className = 'model-actions'
-
-      if (m.incomplete) {
-        const status = document.createElement('span')
-        status.className = 'model-status model-status-warn'
-        status.textContent = '下载不完整'
-        actions.appendChild(status)
-
-        const retryBtn = document.createElement('button')
-        retryBtn.className = 'btn-sm btn-sm-primary'
-        retryBtn.textContent = '重新下载'
-        retryBtn.id = `dl-btn-${m.id}`
-        retryBtn.addEventListener('click', () => downloadModelUI(m.id))
-        actions.appendChild(retryBtn)
-
-        const progress = document.createElement('span')
-        progress.className = 'model-progress'
-        progress.id = `dl-progress-${m.id}`
-        actions.appendChild(progress)
-
-        const delBtn = document.createElement('button')
-        delBtn.className = 'btn-sm btn-sm-danger'
-        delBtn.textContent = '删除'
-        delBtn.addEventListener('click', () => deleteModelUI(m.id))
-        actions.appendChild(delBtn)
-      } else if (m.downloaded) {
-        const status = document.createElement('span')
-        status.className = 'model-status'
-        status.textContent = '已下载'
-        actions.appendChild(status)
-
-        if (m.id !== currentSelectedModel) {
-          const selectBtn = document.createElement('button')
-          selectBtn.className = 'btn-sm btn-sm-select'
-          selectBtn.textContent = '使用'
-          selectBtn.addEventListener('click', () => selectModel(m.id))
-          actions.appendChild(selectBtn)
-        } else {
-          const badge = document.createElement('span')
-          badge.className = 'model-status'
-          badge.textContent = '当前'
-          badge.style.color = '#0ea5e9'
-          actions.appendChild(badge)
-        }
-
-        const delBtn = document.createElement('button')
-        delBtn.className = 'btn-sm btn-sm-danger'
-        delBtn.textContent = '删除'
-        delBtn.addEventListener('click', () => deleteModelUI(m.id))
-        actions.appendChild(delBtn)
-      } else {
-        const dlBtn = document.createElement('button')
-        dlBtn.className = 'btn-sm btn-sm-primary'
-        dlBtn.textContent = '准备模型'
-        dlBtn.id = `dl-btn-${m.id}`
-        dlBtn.addEventListener('click', () => downloadModelUI(m.id))
-        actions.appendChild(dlBtn)
-
-        const progress = document.createElement('span')
-        progress.className = 'model-progress'
-        progress.id = `dl-progress-${m.id}`
-        actions.appendChild(progress)
-      }
-
-      item.appendChild(info)
-      item.appendChild(actions)
-      container.appendChild(item)
     }
   } catch (e) {
     updateModelIntegrityIndicators([])
@@ -1127,6 +1299,8 @@ async function copyLogsToClipboard() {
 }
 
 // ── 初始化 ──
+
+installRendererErrorHooks()
 
 window.addEventListener('DOMContentLoaded', () => {
   // --- 边界拦截与单页面路由 (hash路由分发) ---
@@ -1241,10 +1415,13 @@ function initFloatCapsuleUI() {
   window.electronAPI.onHotkeyState((s) => {
     if (s === 'recording') {
       if (state !== 'idle') return
-      setState('recording')
-      // 保存 promise，供 onHotkeyStopRecording 等待
-      startCapturePromise = startCapture()
-      startCapturePromise.catch(e => showError(String(e)))
+      void (async () => {
+        if (!await ensureAsrReadyBeforeCapture()) return
+        setState('recording')
+        // 保存 promise，供 onHotkeyStopRecording 等待
+        startCapturePromise = startCapture()
+        startCapturePromise.catch(e => showError(String(e)))
+      })()
     } else if (s === 'recognizing') {
       setState('recognizing')
     } else {
@@ -1264,13 +1441,7 @@ function initFloatCapsuleUI() {
       }
       const wav = stopCapture()
       console.log('[热键识别] 发送 WAV，大小:', wav.byteLength)
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('识别超时（30s）')), 30000),
-      )
-      const result = await Promise.race([
-        window.electronAPI.recognizeWav(wav, prevAppId),
-        timeout,
-      ])
+      const result = await window.electronAPI.recognizeWav(wav, prevAppId)
       console.log('[热键识别] 结果:', result)
       setState('idle')
       if (result) showResult(result)
@@ -1290,6 +1461,10 @@ function initFloatCapsuleUI() {
     showError(message)
     console.warn('[权限提醒]', message)
   })
+  window.electronAPI.onAsrRuntimeStatus((status) => {
+    applyAsrRuntimeStatus(status)
+  })
+  void refreshAsrRuntimeStatus()
 
   initVad()
 }
@@ -1379,6 +1554,18 @@ function initDashboardUI() {
 
   // 实时日志推送
   window.electronAPI.onLogEntry((entry) => appendLogEntry(entry))
+  window.electronAPI.onAsrRuntimeStatus((status) => {
+    applyAsrRuntimeStatus(status)
+    const hint = document.getElementById('model-list-hint') as HTMLDivElement | null
+    if (!hint) return
+    if (status.phase === 'starting') {
+      const suffix = status.progress > 0 ? ` (${status.progress}%)` : ''
+      setModelListHint(`本地识别启动中${suffix}：${status.message || '请稍候'}`)
+    } else if (status.phase === 'error') {
+      setModelListHint(`本地识别启动失败：${status.message}`, true)
+    }
+  })
+  void refreshAsrRuntimeStatus()
 
   initTabs()
   loadConfigToForm()

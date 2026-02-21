@@ -67,6 +67,48 @@ def send_json(obj: dict):
         print(line, flush=True)
 
 
+def error_response(
+    msg_id: int,
+    code: str,
+    message: str,
+    phase: str = "",
+    details: str = "",
+    data=None,
+) -> dict:
+    err = {
+        "code": code,
+        "message": str(message),
+    }
+    if phase:
+        err["phase"] = phase
+    if details:
+        err["details"] = details
+    if data is not None:
+        err["data"] = data
+    return {"id": msg_id, "ok": False, "error": err}
+
+
+def error_from_exception(
+    msg_id: int,
+    code: str,
+    message: str,
+    phase: str,
+    exc: Exception,
+    data=None,
+) -> dict:
+    tb = traceback.format_exc()
+    sys.stderr.write(tb)
+    sys.stderr.flush()
+    return error_response(
+        msg_id=msg_id,
+        code=code,
+        message=f"{message}: {type(exc).__name__}: {exc}",
+        phase=phase,
+        details=tb,
+        data=data,
+    )
+
+
 def resolve_model_id(model_name: str) -> str:
     """将 FunASR 短名解析为 ModelScope model_id"""
     funasr_map = {
@@ -329,9 +371,7 @@ def download_model_with_progress(dependencies, msg_id: int):
                 validate_onnx_files(model_dir, backend, quantize)
             send_json({"id": msg_id, "progress": next_progress})
         except Exception as e:
-            sys.stderr.write(f"预下载 {role} 模型 {model_name} 失败: {e}\n")
-            sys.stderr.flush()
-            send_json({"id": msg_id, "progress": next_progress})
+            raise RuntimeError(f"预下载 {role} 模型失败: {model_name}") from e
 
 
 def is_dependency_downloaded(dep) -> bool:
@@ -479,6 +519,8 @@ def create_punc_model(model_name: str, backend: str):
         import funasr.tokenizer.char_tokenizer  # noqa: F401
         # PUNC 使用 CTTransformer；显式导入触发 register.table 注册。
         import funasr.models.ct_transformer.model  # noqa: F401
+        # CTTransformer 依赖 SANMEncoder 注册项。
+        import funasr.models.sanm.encoder  # noqa: F401
         from funasr import AutoModel
 
         model_ref = resolve_model_dir(model_name)
@@ -510,9 +552,7 @@ def split_segments_by_vad(samples: np.ndarray):
     try:
         vad_output = vad_model(samples)
     except Exception as e:
-        sys.stderr.write(f"VAD 推理失败，回退整段识别: {e}\n")
-        sys.stderr.flush()
-        return [samples]
+        raise RuntimeError("VAD 推理失败") from e
 
     pairs = []
     _extract_vad_pairs(vad_output, pairs)
@@ -581,8 +621,7 @@ def run_punc(text: str) -> str:
             if normalized:
                 return normalized
     except Exception as e:
-        sys.stderr.write(f"PUNC 推理失败，回退原文: {e}\n")
-        sys.stderr.flush()
+        raise RuntimeError("PUNC 推理失败") from e
     return text
 
 
@@ -618,46 +657,107 @@ def handle_message(msg: dict) -> dict:
         )
 
         send_json({"id": msg_id, "progress": 0, "status": "检查模型..."})
-        download_model_with_progress(dependencies, msg_id)
+        try:
+            download_model_with_progress(dependencies, msg_id)
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="MODEL_DOWNLOAD_FAILED",
+                message="模型下载或校验失败",
+                phase="init/download",
+                exc=e,
+                data={"dependencies": dependencies},
+            )
 
-        hotword_file = write_hotwords_tmp(hotwords)
+        try:
+            _ = write_hotwords_tmp(hotwords)
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="HOTWORD_PREPARE_FAILED",
+                message="热词初始化失败",
+                phase="init/hotword",
+                exc=e,
+            )
 
         send_json({"id": msg_id, "progress": 92, "status": "加载 ASR 模型..."})
-        sys.stderr.write("[DEBUG] init: before create_asr_model\n")
-        sys.stderr.flush()
-        asr_model = create_asr_model(model_name, backend, quantize)
-        sys.stderr.write("[DEBUG] init: after create_asr_model\n")
-        sys.stderr.flush()
-        asr_backend = backend
-        asr_hotwords_str = hotwords
+        try:
+            asr_model = create_asr_model(model_name, backend, quantize)
+            asr_backend = backend
+            asr_hotwords_str = hotwords
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="ASR_MODEL_INIT_FAILED",
+                message=f"ASR 模型初始化失败: {model_name}",
+                phase="init/asr",
+                exc=e,
+                data={"modelName": model_name, "backend": backend, "quantize": quantize},
+            )
 
         send_json({"id": msg_id, "progress": 96, "status": "加载 VAD 模型..."})
-        sys.stderr.write("[DEBUG] init: before create_vad_model\n")
-        sys.stderr.flush()
-        vad_model = create_vad_model(vad_model_name, vad_backend, vad_quantize)
-        sys.stderr.write("[DEBUG] init: after create_vad_model\n")
-        sys.stderr.flush()
+        try:
+            vad_model = create_vad_model(vad_model_name, vad_backend, vad_quantize)
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="VAD_MODEL_INIT_FAILED",
+                message=f"VAD 模型初始化失败: {vad_model_name}",
+                phase="init/vad",
+                exc=e,
+                data={
+                    "modelName": vad_model_name,
+                    "backend": vad_backend,
+                    "quantize": vad_quantize,
+                },
+            )
 
         send_json({"id": msg_id, "progress": 98, "status": "加载 PUNC 模型..."})
-        sys.stderr.write("[DEBUG] init: before create_punc_model\n")
-        sys.stderr.flush()
-        punc_model = create_punc_model(punc_model_name, punc_backend)
-        sys.stderr.write("[DEBUG] init: after create_punc_model\n")
-        sys.stderr.flush()
+        try:
+            punc_model = create_punc_model(punc_model_name, punc_backend)
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="PUNC_MODEL_INIT_FAILED",
+                message=f"PUNC 模型初始化失败: {punc_model_name}",
+                phase="init/punc",
+                exc=e,
+                data={"modelName": punc_model_name, "backend": punc_backend},
+            )
 
-        _ = hotword_file
-        sys.stderr.write("[DEBUG] init: return ok\n")
-        sys.stderr.flush()
         return {"id": msg_id, "ok": True}
 
     if cmd == "recognize":
         if asr_model is None:
-            return {"id": msg_id, "ok": False, "error": "识别器未初始化"}
+            return error_response(
+                msg_id=msg_id,
+                code="RECOGNIZER_NOT_INITIALIZED",
+                message="识别器未初始化",
+                phase="recognize/precheck",
+            )
 
-        wav_bytes = base64.b64decode(msg["wavBase64"])
-        samples = decode_wav(wav_bytes)
+        try:
+            wav_bytes = base64.b64decode(msg["wavBase64"])
+            samples = decode_wav(wav_bytes)
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="AUDIO_DECODE_FAILED",
+                message="音频解码失败",
+                phase="recognize/decode",
+                exc=e,
+            )
 
-        segments = split_segments_by_vad(samples)
+        try:
+            segments = split_segments_by_vad(samples)
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="VAD_INFER_FAILED",
+                message="VAD 推理失败",
+                phase="recognize/vad",
+                exc=e,
+            )
         # 避免“分段分别识别后拼接”带来的边界词重复：
         # VAD 仅用于裁剪无声片段，ASR 统一单次解码。
         merged = None
@@ -670,8 +770,26 @@ def handle_message(msg: dict) -> dict:
             else:
                 merged = samples
 
-        raw_text = run_asr_once(merged).strip()
-        text = run_punc(raw_text)
+        try:
+            raw_text = run_asr_once(merged).strip()
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="ASR_INFER_FAILED",
+                message="ASR 推理失败",
+                phase="recognize/asr",
+                exc=e,
+            )
+        try:
+            text = run_punc(raw_text)
+        except Exception as e:
+            return error_from_exception(
+                msg_id=msg_id,
+                code="PUNC_INFER_FAILED",
+                message="标点恢复失败",
+                phase="recognize/punc",
+                exc=e,
+            )
 
         return {
             "id": msg_id,
@@ -727,7 +845,12 @@ def handle_message(msg: dict) -> dict:
     if cmd == "ping":
         return {"id": msg_id, "ok": True}
 
-    return {"id": msg_id, "ok": False, "error": f"未知命令: {cmd}"}
+    return error_response(
+        msg_id=msg_id,
+        code="UNKNOWN_COMMAND",
+        message=f"未知命令: {cmd}",
+        phase="router",
+    )
 
 
 def main():
@@ -739,19 +862,32 @@ def main():
         line = line.strip()
         if not line:
             continue
+        msg = None
         try:
             msg = json.loads(line)
+        except json.JSONDecodeError as e:
+            resp = error_from_exception(
+                msg_id=0,
+                code="PARSE_ERROR",
+                message="请求 JSON 解析失败",
+                phase="parse",
+                exc=e,
+                data={"linePreview": line[:200]},
+            )
+            send_json(resp)
+            continue
+
+        try:
             resp = handle_message(msg)
         except Exception as e:
-            tb = traceback.format_exc()
-            sys.stderr.write(tb)
-            sys.stderr.flush()
-            resp = {
-                "id": msg.get("id", 0) if isinstance(msg, dict) else 0,
-                "ok": False,
-                "error": f"sidecar 内部异常: {type(e).__name__}: {e}",
-                "details": tb,
-            }
+            safe_id = msg.get("id", 0) if isinstance(msg, dict) else 0
+            resp = error_from_exception(
+                msg_id=safe_id,
+                code="INTERNAL_ERROR",
+                message="sidecar 内部异常",
+                phase="dispatch",
+                exc=e,
+            )
         send_json(resp)
 
 

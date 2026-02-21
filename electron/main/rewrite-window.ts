@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, ipcMain, clipboard } from 'electron'
+import { BrowserWindow, screen, ipcMain, clipboard, IpcMainInvokeEvent } from 'electron'
 import * as path from 'path'
 import { copySelectedText, pasteClipboard } from './input-sim'
 import { restoreFocus, getFrontmostApp } from './focus'
@@ -8,12 +8,54 @@ import { logger } from './logger'
 let rewriteWindow: BrowserWindow | null = null
 let lastActiveAppId: string | null = null
 
+function stringifyErrorLike(value: unknown): string {
+    if (value instanceof Error) return value.stack || `${value.name}: ${value.message}`
+    if (typeof value === 'string') return value
+    try {
+        return JSON.stringify(value)
+    } catch {
+        return String(value)
+    }
+}
+
+function attachRewriteWindowDiagnostics(win: BrowserWindow) {
+    win.webContents.on('preload-error', (_event, preloadPath, error) => {
+        logger.error(`[RewriteWindow] preload-error path=${preloadPath} err=${stringifyErrorLike(error)}`)
+    })
+    win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+        if (level < 2) return
+        const text = `[RewriteWindow] console level=${level} ${sourceId || 'unknown'}:${line} ${message}`
+        if (level >= 3) logger.error(text)
+        else logger.warn(text)
+    })
+    win.webContents.on('render-process-gone', (_event, details) => {
+        logger.error(`[RewriteWindow] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+    })
+    win.webContents.on('did-fail-load', (_event, code, desc, url) => {
+        logger.error(`[RewriteWindow] did-fail-load code=${code} desc=${desc} url=${url}`)
+    })
+}
+
 export function initRewriteWindow() {
-    ipcMain.handle('close-rewrite', () => {
+    const handle = (
+        channel: string,
+        fn: (event: IpcMainInvokeEvent, ...args: any[]) => unknown | Promise<unknown>,
+    ) => {
+        ipcMain.handle(channel, async (event, ...args) => {
+            try {
+                return await fn(event, ...args)
+            } catch (e) {
+                logger.error(`[IPC:${channel}] ${stringifyErrorLike(e)}`)
+                throw e
+            }
+        })
+    }
+
+    handle('close-rewrite', () => {
         rewriteWindow?.hide()
     })
 
-    ipcMain.handle('execute-rewrite', async (_event, text: string, instruction: string) => {
+    handle('execute-rewrite', async (_event, text: string, instruction: string) => {
         try {
             const result = await rewriteText({
                 text,
@@ -29,7 +71,7 @@ export function initRewriteWindow() {
         }
     })
 
-    ipcMain.handle('replace-text', async (_event, newText: string) => {
+    handle('replace-text', async (_event, newText: string) => {
         rewriteWindow?.hide()
         await restoreFocus(lastActiveAppId)
         clipboard.writeText(newText)
@@ -94,6 +136,7 @@ function createRewriteWindow() {
     })
 
     rewriteWindow.center()
+    attachRewriteWindowDiagnostics(rewriteWindow)
 
     // 以 url hash 的形式定位路由
     if (process.env.ELECTRON_RENDERER_URL) {

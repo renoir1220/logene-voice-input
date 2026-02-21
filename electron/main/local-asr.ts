@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process'
 import * as path from 'path'
+import * as fs from 'fs'
 import { app } from 'electron'
 import { logger } from './logger'
 import { MODELS, ModelInfo } from './model-manager'
@@ -33,20 +34,107 @@ const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) 
 let stdoutBuffer = ''
 // init 进度回调（由 initLocalRecognizer 设置）
 let onInitProgress: ((data: { progress: number; status?: string }) => void) | null = null
-const SIDECAR_START_TIMEOUT_MS = 15000
+const SIDECAR_START_TIMEOUT_MS = 45000
+const SIDECAR_STDERR_BUFFER_LIMIT = 80
+const sidecarStderrLines: string[] = []
+
+type SidecarErrorPayload = {
+  code?: string
+  message: string
+  phase?: string
+  details?: string
+  data?: unknown
+}
+
+function appendSidecarStderr(raw: string): void {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  for (const line of lines) {
+    sidecarStderrLines.push(line)
+    if (sidecarStderrLines.length > SIDECAR_STDERR_BUFFER_LIMIT) {
+      sidecarStderrLines.shift()
+    }
+  }
+}
+
+function getRecentSidecarStderr(maxLines = 6): string {
+  if (sidecarStderrLines.length === 0) return ''
+  return sidecarStderrLines.slice(-maxLines).join(' | ')
+}
+
+function extractDetailsSummary(details: string): string {
+  const lines = details
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length === 0) return ''
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]
+    if (line === 'Traceback (most recent call last):') continue
+    if (line.startsWith('File "')) continue
+    return line
+  }
+  return lines[0]
+}
+
+function normalizeSidecarError(msg: Record<string, any>): SidecarErrorPayload {
+  const err = msg.error
+  if (err && typeof err === 'object') {
+    const payload = err as Record<string, any>
+    return {
+      code: typeof payload.code === 'string' ? payload.code : undefined,
+      phase: typeof payload.phase === 'string' ? payload.phase : undefined,
+      message: typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message.trim()
+        : 'sidecar 返回错误',
+      details: typeof payload.details === 'string' ? payload.details : undefined,
+      data: payload.data,
+    }
+  }
+
+  return {
+    code: typeof msg.code === 'string' ? msg.code : undefined,
+    phase: typeof msg.phase === 'string' ? msg.phase : undefined,
+    message: typeof msg.error === 'string' && msg.error.trim() ? msg.error.trim() : 'sidecar 返回错误',
+    details: typeof msg.details === 'string' ? msg.details : undefined,
+  }
+}
 
 function buildSidecarErrorMessage(msg: Record<string, any>): string {
-  const base = typeof msg.error === 'string' && msg.error.trim() ? msg.error.trim() : 'sidecar 返回错误'
-  const details = typeof msg.details === 'string' ? msg.details.trim() : ''
-  if (!details) return base
-  const firstLine = details.split('\n').find((line) => line.trim()) || ''
-  return firstLine ? `${base} (${firstLine})` : base
+  const parsed = normalizeSidecarError(msg)
+  const tags: string[] = []
+  if (parsed.code) tags.push(`code=${parsed.code}`)
+  if (parsed.phase) tags.push(`phase=${parsed.phase}`)
+  const detailsSummary = parsed.details ? extractDetailsSummary(parsed.details) : ''
+  const suffix = [tags.join(', '), detailsSummary].filter(Boolean).join(' | ')
+  return suffix ? `${parsed.message} (${suffix})` : parsed.message
+}
+
+function logSidecarErrorDetail(id: number, msg: Record<string, any>): void {
+  const parsed = normalizeSidecarError(msg)
+  const detailPayload = {
+    id,
+    code: parsed.code ?? '',
+    phase: parsed.phase ?? '',
+    message: parsed.message,
+    details: parsed.details ?? '',
+    data: parsed.data,
+  }
+  logger.error(`sidecar error detail: ${JSON.stringify(detailPayload)}`)
 }
 
 // 启动 sidecar 进程
 function spawnSidecar(): Promise<void> {
   return new Promise((resolve, reject) => {
     if (sidecar) { resolve(); return }
+    sidecarStderrLines.length = 0
+
+    const rejectEarly = (msg: string) => {
+      logger.error(msg)
+      reject(new Error(msg))
+    }
 
     const isDev = !app.isPackaged
     let cmd: string
@@ -62,6 +150,16 @@ function spawnSidecar(): Promise<void> {
       const ext = process.platform === 'win32' ? '.exe' : ''
       cmd = path.join(process.resourcesPath, 'sidecar', platform, `asr_server${ext}`)
       args = []
+      if (!fs.existsSync(cmd)) {
+        rejectEarly(`sidecar 可执行文件不存在: ${cmd}`)
+        return
+      }
+      try {
+        fs.accessSync(cmd, fs.constants.X_OK)
+      } catch (e) {
+        rejectEarly(`sidecar 不可执行: ${cmd}, ${String(e)}`)
+        return
+      }
     }
 
     logger.info(`启动 ASR sidecar: ${cmd} ${args.join(' ')}`)
@@ -86,12 +184,14 @@ function spawnSidecar(): Promise<void> {
 
     const startTimer = setTimeout(() => {
       if (started || settled) return
+      const stderrSummary = getRecentSidecarStderr()
       logger.error(`sidecar 启动超时 (${SIDECAR_START_TIMEOUT_MS}ms)`)
       try {
         child.kill()
       } catch { /* ignore */ }
       cleanupSidecar()
-      finishReject(new Error(`sidecar 启动超时 (${SIDECAR_START_TIMEOUT_MS}ms)`))
+      const suffix = stderrSummary ? `, stderr: ${stderrSummary}` : ''
+      finishReject(new Error(`sidecar 启动超时 (${SIDECAR_START_TIMEOUT_MS}ms)${suffix}`))
     }, SIDECAR_START_TIMEOUT_MS)
 
     child.stdout!.on('data', (chunk: Buffer) => {
@@ -124,6 +224,10 @@ function spawnSidecar(): Promise<void> {
           if (cb) {
             // 进度消息（非最终响应）
             if ('progress' in msg && !('ok' in msg)) {
+              if (typeof msg.progress === 'number') {
+                const status = typeof msg.status === 'string' ? msg.status : ''
+                logger.info(`[ASR] init progress: ${msg.progress}%${status ? `, ${status}` : ''}`)
+              }
               if (onInitProgress) {
                 onInitProgress({ progress: msg.progress, status: msg.status })
               }
@@ -134,6 +238,7 @@ function spawnSidecar(): Promise<void> {
               cb.resolve(msg)
             } else {
               const errMsg = buildSidecarErrorMessage(msg)
+              logSidecarErrorDetail(id, msg)
               logger.error(`sidecar 请求失败(id=${id}): ${errMsg}`)
               cb.reject(new Error(errMsg))
             }
@@ -145,26 +250,38 @@ function spawnSidecar(): Promise<void> {
     })
 
     child.stderr!.on('data', (chunk: Buffer) => {
-      logger.warn(`sidecar stderr: ${chunk.toString('utf-8').trim()}`)
+      const raw = chunk.toString('utf-8')
+      appendSidecarStderr(raw)
+      const lines = raw
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+      for (const line of lines) {
+        logger.warn(`sidecar stderr: ${line}`)
+      }
     })
 
     child.on('error', (err) => {
-      logger.error(`sidecar 进程错误: ${err.message}`)
+      const stderrSummary = getRecentSidecarStderr()
+      const suffix = stderrSummary ? `, stderr: ${stderrSummary}` : ''
+      logger.error(`sidecar 进程错误: ${err.message}${suffix}`)
       clearTimeout(startTimer)
-      if (!started) finishReject(err)
+      if (!started) finishReject(new Error(`sidecar 进程错误: ${err.message}${suffix}`))
       cleanupSidecar()
     })
 
     child.on('exit', (code) => {
+      const stderrSummary = getRecentSidecarStderr()
+      const suffix = stderrSummary ? `, stderr: ${stderrSummary}` : ''
       logger.info(`sidecar 进程退出，code=${code}`)
       // 拒绝所有等待中的请求
       for (const [, cb] of pending) {
-        cb.reject(new Error(`sidecar 进程意外退出 (code=${code})`))
+        cb.reject(new Error(`sidecar 进程意外退出 (code=${code})${suffix}`))
       }
       pending.clear()
       cleanupSidecar()
       clearTimeout(startTimer)
-      if (!started) finishReject(new Error(`sidecar 启动失败 (code=${code})`))
+      if (!started) finishReject(new Error(`sidecar 启动失败 (code=${code})${suffix}`))
     })
 
     sidecar = child
@@ -190,7 +307,9 @@ function sendRequest(msg: Record<string, any>, timeoutMs = 30000): Promise<any> 
 
     const timer = setTimeout(() => {
       pending.delete(id)
-      reject(new Error(`sidecar 请求超时 (${timeoutMs}ms)`))
+      const stderrSummary = getRecentSidecarStderr()
+      const suffix = stderrSummary ? `, stderr: ${stderrSummary}` : ''
+      reject(new Error(`sidecar 请求超时 (${timeoutMs}ms)${suffix}`))
     }, timeoutMs)
 
     pending.set(id, {
@@ -283,6 +402,8 @@ export async function initLocalRecognizer(
     currentModelId = null
     const detail = e instanceof Error ? e.message : String(e)
     logger.error(`[ASR] 本地模型初始化失败(${modelInfo.name}): ${detail}`)
+    // 初始化失败后主动重置 sidecar，避免残留进程或半初始化状态影响后续识别。
+    disposeLocalRecognizer()
     const firstLine = detail.split('\n').find((line) => line.trim()) || detail
     throw new Error(`本地模型初始化失败（${modelInfo.name}）: ${firstLine}`)
   } finally {
@@ -302,7 +423,7 @@ export async function recognizeLocal(wavBuffer: Buffer): Promise<string> {
   const resp = await sendRequest({
     cmd: 'recognize',
     wavBase64: wavBuffer.toString('base64'),
-  })
+  }, 120000)
 
   if (typeof resp?.segmentCount === 'number') {
     logger.info(`[ASR] sidecar stats: segmentCount=${resp.segmentCount}, asrPasses=${resp?.asrPasses ?? '?'}`)

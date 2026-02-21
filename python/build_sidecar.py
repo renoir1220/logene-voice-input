@@ -60,6 +60,7 @@ def main():
         "--noconfirm",
         "--hidden-import", "funasr.tokenizer.char_tokenizer",
         "--hidden-import", "funasr.models.ct_transformer.model",
+        "--hidden-import", "funasr.models.sanm.encoder",
         str(SCRIPT),
     ]
 

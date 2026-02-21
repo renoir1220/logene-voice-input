@@ -104,12 +104,14 @@ describe('local-asr (sidecar + FunASR)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.resetModules()
+    vi.useRealTimers()
 
     mockProc = createMockProcess()
     spawnMock.mockReturnValue(mockProc)
   })
 
   afterEach(async () => {
+    vi.useRealTimers()
     const { disposeLocalRecognizer } = await import('../../electron/main/local-asr')
     disposeLocalRecognizer()
   })
@@ -281,6 +283,29 @@ describe('local-asr (sidecar + FunASR)', () => {
     await expect(initPromise).rejects.toThrow(/本地模型初始化失败.*context model load failed/)
   })
 
+  it('sidecar 结构化错误应透传 code/phase 摘要', async () => {
+    const { initLocalRecognizer } = await import('../../electron/main/local-asr')
+
+    const initPromise = initLocalRecognizer('paraformer-zh')
+    await new Promise(r => setTimeout(r, 10))
+    mockProc._emit('stdout', '{"ready":true}')
+    await new Promise(r => setTimeout(r, 10))
+
+    const req = JSON.parse(mockProc.stdin.write.mock.calls[0][0])
+    mockProc._emit('stdout', JSON.stringify({
+      id: req.id,
+      ok: false,
+      error: {
+        code: 'PUNC_MODEL_INIT_FAILED',
+        phase: 'init/punc',
+        message: 'PUNC 模型初始化失败',
+        details: 'Traceback\\nRuntimeError: CTTransformer is not registered',
+      },
+    }))
+
+    await expect(initPromise).rejects.toThrow(/PUNC 模型初始化失败.*code=PUNC_MODEL_INIT_FAILED.*phase=init\/punc/)
+  })
+
   it('重复初始化同一模型不会重新发送 init', async () => {
     const { initLocalRecognizer } = await import('../../electron/main/local-asr')
 
@@ -374,6 +399,28 @@ describe('local-asr (sidecar + FunASR)', () => {
     mockProc._emit('stdout', JSON.stringify({ id: recReq.id, ok: false, error: 'wav decode failed' }))
 
     await expect(recPromise).rejects.toThrow('wav decode failed')
+  })
+
+  it('请求超时应附带最近 sidecar stderr 摘要', async () => {
+    vi.useFakeTimers()
+    const { initLocalRecognizer, recognizeLocal } = await import('../../electron/main/local-asr')
+
+    const initPromise = initLocalRecognizer('paraformer-zh')
+    await vi.advanceTimersByTimeAsync(20)
+    mockProc._emit('stdout', '{"ready":true}')
+    await vi.advanceTimersByTimeAsync(20)
+    const initReq = JSON.parse(mockProc.stdin.write.mock.calls[0][0])
+    mockProc._emit('stdout', JSON.stringify({ id: initReq.id, ok: true }))
+    await initPromise
+
+    const recPromise = recognizeLocal(Buffer.alloc(128))
+    const expectRejected = expect(recPromise).rejects.toThrow(/sidecar 请求超时 \(120000ms\).*stderr: .*RuntimeError: sidecar crashed/)
+    await vi.advanceTimersByTimeAsync(20)
+    mockProc._emit('stderr', 'Traceback (most recent call last):\\n')
+    mockProc._emit('stderr', 'RuntimeError: sidecar crashed')
+
+    await vi.advanceTimersByTimeAsync(120001)
+    await expectRejected
   })
 
   it('disposeLocalRecognizer 发送 dispose 并杀掉进程', async () => {

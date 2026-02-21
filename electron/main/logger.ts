@@ -12,7 +12,7 @@ interface LogEntry {
 }
 
 // 内存中保留最近的日志条目，供前端拉取
-const LOG_BUFFER_SIZE = 500
+const LOG_BUFFER_SIZE = 2000
 const buffer: LogEntry[] = []
 
 // 日志文件路径
