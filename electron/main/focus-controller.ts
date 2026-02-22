@@ -1,6 +1,7 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { logger } from './logger'
+import * as win32Focus from './win32-focus'
 
 const execAsync = promisify(exec)
 
@@ -52,7 +53,7 @@ export async function getFrontmostApp(): Promise<string | null> {
     if (process.platform === 'darwin') {
       return await getFrontmostAppDarwin()
     } else if (process.platform === 'win32') {
-      return (require('./win32-focus') as typeof import('./win32-focus')).getWin32ForegroundWindow()
+      return win32Focus.getWin32ForegroundWindow()
     } else {
       const { stdout } = await execAsync('xdotool getactivewindow', { timeout: 1200 })
       return stdout.trim() || null
@@ -72,7 +73,7 @@ export async function restoreFocus(appId: string | null): Promise<void> {
         { timeout: 1500 },
       )
     } else if (process.platform === 'win32') {
-      ;(require('./win32-focus') as typeof import('./win32-focus')).setWin32ForegroundWindow(appId)
+      win32Focus.setWin32ForegroundWindow(appId)
     } else {
       await execAsync(`xdotool windowfocus ${appId}`, { timeout: 1500 })
     }

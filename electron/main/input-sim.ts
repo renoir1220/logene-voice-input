@@ -1,6 +1,7 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { clipboard } from 'electron'
+import * as win32Focus from './win32-focus'
 
 const execAsync = promisify(exec)
 
@@ -68,7 +69,7 @@ function getFKeyCode(fKey: string): number {
 
 // Windows：koffi keybd_event
 async function sendShortcutWin(shortcut: string): Promise<void> {
-  ;(require('./win32-focus') as typeof import('./win32-focus')).win32SendShortcut(shortcut)
+  win32Focus.win32SendShortcut(shortcut)
 }
 
 // Linux：xdotool
@@ -87,7 +88,7 @@ export async function pasteClipboard(): Promise<void> {
   if (process.platform === 'darwin') {
     await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using {command down}'`)
   } else if (process.platform === 'win32') {
-    ;(require('./win32-focus') as typeof import('./win32-focus')).win32PasteClipboard()
+    win32Focus.win32PasteClipboard()
   } else {
     await execAsync('xdotool key ctrl+v')
   }
