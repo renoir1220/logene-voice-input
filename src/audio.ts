@@ -194,6 +194,26 @@ export function setAudioCaptureConfig(raw: AudioCaptureConfigInput | null | unde
   )
 }
 
+// 检测是否有可用的音频输入设备
+async function hasAudioInputDevice(): Promise<boolean> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    return devices.some(d => d.kind === 'audioinput' && d.deviceId !== '')
+  } catch {
+    return false
+  }
+}
+
+// 根据设备检测结果生成精确的错误信息，并触发主进程权限引导
+async function throwMicError(tag: string): Promise<never> {
+  const hasDevice = await hasAudioInputDevice()
+  window.electronAPI?.checkMicPermission?.()
+  if (!hasDevice) {
+    throw new Error('未检测到麦克风设备，请连接麦克风或在声音设置中启用录音设备')
+  }
+  throw new Error('麦克风访问被拒绝，请在系统隐私设置中允许本应用使用麦克风')
+}
+
 // 初始化麦克风
 async function initMic(): Promise<void> {
   if (mediaStream && mediaStreamConstraintVersion === inputConstraintVersion) return
@@ -203,10 +223,29 @@ async function initMic(): Promise<void> {
   }
 
   const constraints = buildAudioConstraints(runtimeAudioCaptureConfig)
-  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false })
+  console.warn('[录音] 请求麦克风，constraints:', safeJson(constraints))
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false })
+  } catch (err) {
+    // 约束匹配失败时，用最简约束重试一次
+    if (err instanceof DOMException && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError')) {
+      console.warn(`[录音] getUserMedia 失败(${err.name})，尝试简约束 {audio:true}`)
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      } catch (retryErr) {
+        console.warn(`[录音] getUserMedia 简约束也失败: ${String(retryErr)}`)
+        await throwMicError('录音')
+      }
+    } else {
+      console.warn(`[录音] getUserMedia 失败: ${String(err)}`)
+      await throwMicError('录音')
+    }
+  }
   mediaStreamConstraintVersion = inputConstraintVersion
   applySpeechContentHint(mediaStream, 'capture')
   logTrackDiagnostics(mediaStream, 'capture', constraints)
+  const track = mediaStream.getAudioTracks()[0]
+  console.warn(`[录音] 麦克风已获取，track: ${track?.label}, readyState: ${track?.readyState}, enabled: ${track?.enabled}`)
 }
 
 async function initVadMic(): Promise<void> {
@@ -217,7 +256,22 @@ async function initVadMic(): Promise<void> {
   }
 
   const constraints = buildAudioConstraints(runtimeAudioCaptureConfig)
-  vadStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false })
+  try {
+    vadStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false })
+  } catch (err) {
+    if (err instanceof DOMException && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError')) {
+      console.warn(`[VAD] getUserMedia 失败(${err.name})，尝试简约束 {audio:true}`)
+      try {
+        vadStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      } catch (retryErr) {
+        console.warn(`[VAD] getUserMedia 简约束也失败: ${String(retryErr)}`)
+        await throwMicError('VAD')
+      }
+    } else {
+      console.warn(`[VAD] getUserMedia 失败: ${String(err)}`)
+      await throwMicError('VAD')
+    }
+  }
   vadStreamConstraintVersion = inputConstraintVersion
   applySpeechContentHint(vadStream, 'vad')
   logTrackDiagnostics(vadStream, 'vad', constraints)
@@ -240,6 +294,7 @@ export async function startCapture(): Promise<void> {
   captureWorkletNode = await createCaptureWorkletNode(audioCtx)
   if (captureWorkletNode) {
     captureSource.connect(captureWorkletNode)
+    console.warn('[录音] 使用 AudioWorklet 采集')
   } else {
     // Fallback: 在不支持 AudioWorklet 的环境退回 ScriptProcessor。
     scriptProcessor = audioCtx.createScriptProcessor(CAPTURE_BUFFER_SIZE, 1, 1)
@@ -250,9 +305,10 @@ export async function startCapture(): Promise<void> {
     }
     captureSource.connect(scriptProcessor)
     scriptProcessor.connect(audioCtx.destination)
+    console.warn('[录音] 使用 ScriptProcessor 采集（AudioWorklet 不可用）')
   }
 
-  console.log('[录音] 开始采集，AudioContext state:', audioCtx.state)
+  console.warn('[录音] 开始采集，AudioContext state:', audioCtx.state, 'sampleRate:', audioCtx.sampleRate)
 }
 
 function countSamples(chunks: Float32Array[]): number {
@@ -284,7 +340,7 @@ export async function stopCapture(): Promise<ArrayBuffer> {
       const chunksWithTail = appendTailSilence(chunks, PCM_SAMPLE_RATE, captureCfg.tailSilenceMs)
       const wav = encodeWav(chunksWithTail)
       const durationMs = Math.round((countSamples(chunksWithTail) / PCM_SAMPLE_RATE) * 1000)
-      console.log(
+      console.warn(
         `[录音] 停止采集(空上下文)，chunks=${chunks.length}，durationMs=${durationMs}，` +
         `tailSilenceMs=${captureCfg.tailSilenceMs}，WAV=${wav.byteLength} 字节`,
       )
@@ -324,7 +380,7 @@ export async function stopCapture(): Promise<ArrayBuffer> {
     const wav = encodeWav(chunksWithTail)
     const durationMs = Math.round((countSamples(chunksWithTail) / PCM_SAMPLE_RATE) * 1000)
     const stopElapsedMs = Date.now() - stopStartAt
-    console.log(
+    console.warn(
       `[录音] 停止采集，chunks=${chunks.length}，durationMs=${durationMs}，` +
       `postRollMs=${captureCfg.postRollMs}，tailSilenceMs=${captureCfg.tailSilenceMs}，` +
       `flushWaitMs=${flushWaitMs}，stopElapsedMs=${stopElapsedMs}，WAV=${wav.byteLength} 字节`,
@@ -370,7 +426,12 @@ async function createCaptureWorkletNode(ctx: AudioContext): Promise<AudioWorklet
       }
       if (!isCapturing) return
       if (payload instanceof Float32Array) {
+        if (pcmSamples.length === 0) {
+          console.warn(`[录音] worklet 首次收到音频数据，长度=${payload.length}`)
+        }
         pcmSamples.push(payload)
+      } else {
+        console.warn(`[录音] worklet 收到非 Float32Array 数据: type=${typeof payload}, constructor=${payload?.constructor?.name}`)
       }
     }
     return node

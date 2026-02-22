@@ -1,7 +1,8 @@
 /* ── 视图 1：极致微型球浮窗 (Micro-Orb) ── */
 #float-capsule-view {
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  padding-top: 4px;
 }
 
 .capsule-container {
@@ -247,6 +248,27 @@
   100% {
     transform: scale(1);
   }
+}
+
+/* ── 错误提示条 ── */
+#error-bar {
+  display: none;
+  max-width: 280px;
+  margin: 4px auto 0;
+  padding: 4px 10px;
+  background: rgba(30, 30, 30, 0.88);
+  color: #fca5a5;
+  font-size: 11px;
+  line-height: 1.4;
+  border-radius: 8px;
+  text-align: center;
+  pointer-events: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#error-bar.visible {
+  display: block;
 }
 
 /* Hide other unused floated UI */

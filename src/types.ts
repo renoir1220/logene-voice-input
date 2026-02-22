@@ -14,6 +14,7 @@ declare global {
       openDashboard: () => Promise<void>
       getWindowPosition: () => Promise<[number, number]>
       setWindowPosition: (x: number, y: number) => Promise<void>
+      setIgnoreMouseEvents: (ignore: boolean, opts?: { forward: boolean }) => Promise<void>
       getModelStatuses: () => Promise<ModelStatus[]>
       getModelCatalog: () => Promise<Array<{
         id: string
@@ -39,6 +40,7 @@ declare global {
         colno?: number
         reason?: string
       }) => Promise<boolean>
+      checkMicPermission: () => Promise<boolean>
       restartApp: () => Promise<boolean>
       onHotkeyState: (cb: (state: string) => void) => void
       onToggleVad: (cb: (enabled: boolean) => void) => void

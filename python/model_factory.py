@@ -3,6 +3,7 @@
 import importlib.machinery
 import importlib
 import importlib.util
+import os
 import sys
 import types
 
@@ -108,9 +109,15 @@ def create_punc_model(model_name: str, backend: str):
         except ImportError as e:
             raise RuntimeError("缺少 funasr_onnx 依赖，请安装 requirements.txt 后重试") from e
 
+        model_dir = resolve_model_dir(model_name)
+        # 自动检测：若只有 model_quant.onnx 则使用量化版
+        has_plain = os.path.exists(os.path.join(model_dir, "model.onnx"))
+        has_quant = os.path.exists(os.path.join(model_dir, "model_quant.onnx"))
+        quantize = (not has_plain) and has_quant
+
         return CT_Transformer(
-            model_dir=resolve_model_dir(model_name),
-            quantize=False,
+            model_dir=model_dir,
+            quantize=quantize,
             device_id="-1",
             intra_op_num_threads=2,
         )

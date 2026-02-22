@@ -76,18 +76,13 @@ export function initFloatCapsuleUI() {
   })
 
   // 悬浮球事件（单击录音，双击/右键呼出面板）
+  // TODO: Windows 透明窗口下单击可能不生效，待去掉透明后统一修复
   let clickTimer: ReturnType<typeof setTimeout> | null = null
   recordBtn.addEventListener('click', (e) => {
-    if (dragMoved) {
-      uiTrace('record-btn.click.ignored', { reason: 'drag-moved' })
-      e.preventDefault()
-      e.stopPropagation()
-      return
-    }
+    if (dragMoved) { e.preventDefault(); e.stopPropagation(); return }
     if (clickTimer) return
     clickTimer = setTimeout(() => {
       clickTimer = null
-      uiTrace('record-btn.click')
       onRecordClick()
     }, 250)
   })
@@ -105,7 +100,6 @@ export function initFloatCapsuleUI() {
   vadToggleBtn?.addEventListener('click', (e) => {
     e.preventDefault()
     e.stopPropagation()
-    uiTrace('vad-btn.click', { targetEnabled: !vadState.enabled })
     setVadEnabled(!vadState.enabled)
   })
 
@@ -129,12 +123,13 @@ export function initFloatCapsuleUI() {
 
   // 热键停止录音
   window.electronAPI.onHotkeyStopRecording(async (prevAppId) => {
+    console.warn(`[热键识别] stopRecording 收到，state=${getState()}, hasPromise=${!!getStartCapturePromise()}`)
     if (getState() !== 'recording') return
     setState('recognizing')
     try {
       const p = getStartCapturePromise()
       if (p) {
-        await p.catch(() => { })
+        await p // 如果 startCapture 失败，直接抛出进入 catch
         setStartCapturePromise(null)
       }
       const wav = await stopCapture()

@@ -79,8 +79,13 @@ function getMissingOnnxFiles(modelDir: string, backend: string, quantize: boolea
     if (!fs.existsSync(path.join(modelDir, 'model_quant.onnx'))) {
       missing.push('model_quant.onnx')
     }
-  } else if (!fs.existsSync(path.join(modelDir, 'model.onnx'))) {
-    missing.push('model.onnx')
+  } else {
+    // 部分 ONNX 模型仓库只提供量化版，两者有其一即可
+    const hasPlain = fs.existsSync(path.join(modelDir, 'model.onnx'))
+    const hasQuant = fs.existsSync(path.join(modelDir, 'model_quant.onnx'))
+    if (!hasPlain && !hasQuant) {
+      missing.push('model.onnx')
+    }
   }
 
   if (backend === 'funasr_onnx_contextual') {
@@ -182,7 +187,7 @@ export const MODELS: ModelInfo[] = [
     vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
     vadBackend: 'funasr_onnx_vad',
     vadQuantized: true,
-    puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+    puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx',
     puncBackend: 'funasr_onnx_punc',
   },
 ]

@@ -142,9 +142,13 @@ function spawnSidecar(): Promise<void> {
     let args: string[]
 
     if (isDev) {
-      // 开发模式：直接用 python3 运行脚本
-      cmd = 'python3'
-      args = [path.join(__dirname, '../../python/asr_server.py')]
+      // 开发模式：优先使用 .venv 中的 Python，确保依赖可用
+      const projectRoot = path.join(__dirname, '../..')
+      const venvPython = process.platform === 'win32'
+        ? path.join(projectRoot, '.venv', 'Scripts', 'python.exe')
+        : path.join(projectRoot, '.venv', 'bin', 'python3')
+      cmd = fs.existsSync(venvPython) ? venvPython : (process.platform === 'win32' ? 'python' : 'python3')
+      args = [path.join(projectRoot, 'python/asr_server.py')]
     } else {
       // 生产模式：使用 PyInstaller 打包的二进制
       const platform = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux'

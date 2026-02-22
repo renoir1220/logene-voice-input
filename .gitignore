@@ -38,3 +38,9 @@ venv/
 # PyInstaller
 build/sidecar_build/
 build/*.spec
+
+# Electron build output
+dist2/
+
+# Tools / scripts (not for version control)
+get-pip.py

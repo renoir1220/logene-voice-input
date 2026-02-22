@@ -10,6 +10,7 @@ import { typeText, sendShortcut } from './input-sim'
 import { normalizeAsrText, applyTextRules } from './asr-text'
 import { optimizeAsrTextWithLlm, generateDailySummary } from './llm-service'
 import { FocusController } from './focus-controller'
+import { checkPermissionsAndGuide } from './permissions'
 import { insertRecognition, getStats, getRecentHistory, getAllHistory, getRecordsByDate } from './db'
 import {
   mainWindow,
@@ -240,6 +241,10 @@ export function setupIpc(
     }
   })
 
+  handle('check-mic-permission', async () => {
+    return checkPermissionsAndGuide('麦克风访问失败', true)
+  })
+
   handle('get-vad-enabled', () => vadEnabled)
   handle('set-vad-enabled', (_event, enabled: boolean) => {
     return setVadEnabledState(Boolean(enabled))
@@ -319,6 +324,12 @@ export function setupIpc(
     const buf = Buffer.from(wavBuffer)
     const asrMode = cfg.asr?.mode ?? 'api'
     logger.info(`[ASR#${reqId}] 收到 WAV，大小 ${buf.byteLength} 字节，模式: ${asrMode}`)
+
+    // WAV 文件头 44 字节，无实际音频数据时直接返回
+    if (buf.byteLength <= 44) {
+      logger.info(`[ASR#${reqId}] WAV 为空（≤44 字节），跳过识别`)
+      return ''
+    }
 
     let rawText: unknown
     try {
@@ -480,6 +491,12 @@ export function setupIpc(
       if (mainWindow.getSize()[0] === FLOAT_WIDTH) {
         setFloatPos({ x: Math.round(x), y: Math.round(y) })
       }
+    }
+  })
+
+  handle('set-ignore-mouse-events', (_event, ignore: boolean, opts?: { forward: boolean }) => {
+    if (mainWindow) {
+      mainWindow.setIgnoreMouseEvents(ignore, opts)
     }
   })
 }

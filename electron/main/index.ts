@@ -6,6 +6,7 @@ import {
   nativeImage,
   globalShortcut,
   screen,
+  session,
 } from 'electron'
 import * as path from 'path'
 import { uIOhook } from 'uiohook-napi'
@@ -65,7 +66,7 @@ function createWindow() {
   setFloatPos({ x: sw - FLOAT_WIDTH - 40, y: sh - FLOAT_HEIGHT - 40 })
 
   const win = new BrowserWindow({
-    type: process.platform === 'darwin' ? 'panel' : 'toolbar',
+    type: process.platform === 'darwin' ? 'panel' : undefined,
     width: FLOAT_WIDTH,
     height: FLOAT_HEIGHT,
     x: floatPos.x,
@@ -73,7 +74,7 @@ function createWindow() {
     frame: false,
     transparent: true,
     show: false,
-    focusable: false,
+    focusable: process.platform !== 'darwin',
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
@@ -94,7 +95,9 @@ function createWindow() {
     win.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
 
-  win.setFocusable(false)
+  if (process.platform === 'darwin') {
+    win.setFocusable(false)
+  }
   win.setAlwaysOnTop(true, 'floating', 1)
   win.once('ready-to-show', () => {
     logger.info('[Window] ready-to-show')
@@ -119,8 +122,12 @@ function createWindow() {
 // ── 系统托盘 ──
 
 function createTray() {
-  const icon = nativeImage.createEmpty()
-  const t = new Tray(icon)
+  const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png'
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, iconFile)
+    : path.join(__dirname, '../../build/icons', iconFile)
+  const icon = nativeImage.createFromPath(iconPath)
+  const t = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
   setTray(t)
   t.setToolTip('朗珈语音输入法')
   updateTrayMenu()
@@ -160,6 +167,17 @@ function updateTrayMenu() {
 registerProcessErrorHooks(app)
 
 app.whenReady().then(async () => {
+  // 允许渲染进程访问麦克风等媒体设备
+  session.defaultSession.setPermissionCheckHandler((_wc, permission, _origin, details) => {
+    if (permission === 'media') return true
+    if ((details as { mediaType?: string }).mediaType === 'audio') return true
+    return true
+  })
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (permission === 'media') return callback(true)
+    callback(true)
+  })
+
   initLogger((entry) => {
     mainWindow?.webContents.send('log-entry', entry)
   })

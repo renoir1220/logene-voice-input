@@ -247,6 +247,8 @@ function renderStep(hide: () => void) {
 }
 
 export async function initFirstUseOnboarding() {
+  // TODO: 引导界面暂时停用，待完善后重新启用
+  return
   const overlay = qs<HTMLDivElement>('onboarding-overlay')
   const closeBtn = qs<HTMLButtonElement>('onboarding-close-btn')
   const primaryBtn = qs<HTMLButtonElement>('onboarding-primary-btn')

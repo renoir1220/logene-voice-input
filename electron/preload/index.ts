@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('recognize-wav', wavBuffer, prevAppId),
   getWindowPosition: () => ipcRenderer.invoke('get-window-position'),
   setWindowPosition: (x: number, y: number) => ipcRenderer.invoke('set-window-position', x, y),
+  setIgnoreMouseEvents: (ignore: boolean, opts?: { forward: boolean }) =>
+    ipcRenderer.invoke('set-ignore-mouse-events', ignore, opts),
 
   // 模型管理
   getModelStatuses: () => ipcRenderer.invoke('get-model-statuses'),
@@ -41,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     colno?: number
     reason?: string
   }) => ipcRenderer.invoke('report-renderer-error', payload),
+  checkMicPermission: () => ipcRenderer.invoke('check-mic-permission'),
   restartApp: () => ipcRenderer.invoke('restart-app'),
 
   // 重写专用通道

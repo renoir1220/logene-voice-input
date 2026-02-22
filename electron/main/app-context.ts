@@ -13,7 +13,7 @@ export let hotkeysRegistered = false
 export let lastPermissionCheckAt = 0
 
 export const FLOAT_WIDTH = 116
-export const FLOAT_HEIGHT = 46
+export const FLOAT_HEIGHT = 100
 export const VAD_TOGGLE_HOTKEY = 'Alt+Shift+V'
 export const PERMISSION_CHECK_INTERVAL_MS = 30_000
 export const DEFAULT_LOCAL_MODEL_ID = 'paraformer-zh-contextual-quant'
