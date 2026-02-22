@@ -1,6 +1,8 @@
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { getConfig } from './config'
+import { logger } from './logger'
 
 export type AsrBackend = 'funasr_onnx_contextual' | 'funasr_onnx_paraformer'
 export type HotwordFormat = 'space-separated' | 'none'
@@ -49,7 +51,7 @@ export function isHotwordCapableModel(model: ModelInfo): boolean {
 }
 
 const FUNASR_MODEL_ID_MAP: Record<string, string> = {
-  'ct-punc': 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+  'ct-punc': 'damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx',
 }
 
 function resolveModelId(modelName: string): string {
@@ -74,6 +76,14 @@ function findExistingModelDir(modelName: string): string | null {
 }
 
 function getMissingOnnxFiles(modelDir: string, backend: string, quantize: boolean): string[] {
+  // PUNC ONNX 模型只提供 model_quant.onnx
+  if (backend === 'funasr_onnx_punc') {
+    if (!fs.existsSync(path.join(modelDir, 'model_quant.onnx'))) {
+      return ['model_quant.onnx']
+    }
+    return []
+  }
+
   const missing: string[] = []
   if (quantize) {
     if (!fs.existsSync(path.join(modelDir, 'model_quant.onnx'))) {
@@ -100,6 +110,7 @@ function getMissingOnnxFiles(modelDir: string, backend: string, quantize: boolea
 function inspectDependency(dep: ModelDependency): ModelDependencyStatus {
   const modelDir = findExistingModelDir(dep.modelName)
   const cached = Boolean(modelDir)
+  logger.debug(`[Model] inspectDep role=${dep.role} model=${dep.modelName} dir=${modelDir ?? 'NOT_FOUND'} cached=${cached}`)
   if (!cached || !modelDir) {
     return {
       ...dep,
@@ -112,6 +123,7 @@ function inspectDependency(dep: ModelDependency): ModelDependencyStatus {
 
   if (dep.backend.startsWith('funasr_onnx')) {
     const missingFiles = getMissingOnnxFiles(modelDir, dep.backend, dep.quantize)
+    logger.debug(`[Model] inspectDep role=${dep.role} backend=${dep.backend} quantize=${dep.quantize} missing=[${missingFiles.join(',')}]`)
     if (missingFiles.length > 0) {
       return {
         ...dep,
@@ -149,7 +161,9 @@ function buildDependencies(model: ModelInfo): ModelDependency[] {
       quantize: Boolean(model.vadQuantized),
     })
   }
-  if (model.puncModel) {
+  const puncEnabled = getConfig().asr?.puncEnabled !== false
+  logger.info(`[Model] buildDependencies id=${model.id} puncEnabled=${puncEnabled} puncModel=${model.puncModel || 'none'}`)
+  if (model.puncModel && puncEnabled) {
     deps.push({
       role: 'PUNC',
       modelName: model.puncModel,
@@ -165,6 +179,7 @@ export function inspectLocalModelStatus(model: ModelInfo): ModelCheckStatus {
   const downloaded = dependencies.every((dep) => dep.complete)
   const asrCached = dependencies.some((dep) => dep.role === 'ASR' && dep.cached)
   const incomplete = asrCached && !downloaded
+  logger.info(`[Model] inspectStatus id=${model.id} downloaded=${downloaded} incomplete=${incomplete} deps=${dependencies.map(d => `${d.role}:${d.complete}`).join(',')}`)
   return { downloaded, incomplete, dependencies }
 }
 
@@ -182,7 +197,7 @@ export const MODELS: ModelInfo[] = [
     vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
     vadBackend: 'funasr_onnx_vad',
     vadQuantized: true,
-    puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+    puncModel: 'damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx',
     puncBackend: 'funasr_onnx_punc',
   },
 ]
@@ -190,4 +205,18 @@ export const MODELS: ModelInfo[] = [
 // 获取所有模型基本信息（不含下载状态，下载状态由 local-asr 异步查询）
 export function getModelInfoList(): ModelInfo[] {
   return MODELS.filter(isHotwordCapableModel)
+}
+
+/** 删除指定模型的本地缓存文件 */
+export function deleteModelCache(modelId: string): void {
+  const model = MODELS.find(m => m.id === modelId)
+  if (!model) throw new Error(`未知模型: ${modelId}`)
+
+  const deps = [model.funasrModel, model.vadModel, model.puncModel].filter(Boolean)
+  for (const dep of deps) {
+    const modelDir = findExistingModelDir(dep)
+    if (modelDir && fs.existsSync(modelDir)) {
+      fs.rmSync(modelDir, { recursive: true, force: true })
+    }
+  }
 }

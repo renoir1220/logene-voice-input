@@ -38,7 +38,7 @@ vi.mock('../../electron/main/model-manager', () => ({
       vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
       vadBackend: 'funasr_onnx_vad',
       vadQuantized: true,
-      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+      puncModel: 'damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx',
       puncBackend: 'funasr_onnx_punc',
     },
   ],
@@ -118,7 +118,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     expect(req.vadModelName).toBe('iic/speech_fsmn_vad_zh-cn-16k-common-onnx')
     expect(req.vadBackend).toBe('funasr_onnx_vad')
     expect(req.vadQuantize).toBe(true)
-    expect(req.puncModelName).toBe('iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch')
+    expect(req.puncModelName).toBe('damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx')
     expect(req.puncBackend).toBe('funasr_onnx_punc')
     // 所有模型都传热词
     expect(req.hotwords).toContain('肉眼所见')
@@ -258,7 +258,7 @@ describe('local-asr (sidecar + FunASR)', () => {
       vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
       vadBackend: 'funasr_onnx_vad',
       vadQuantized: true,
-      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch',
+      puncModel: 'damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx',
       puncBackend: 'funasr_onnx_punc',
     })
     try {
@@ -356,7 +356,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     expect(req.vadModelName).toBe('iic/speech_fsmn_vad_zh-cn-16k-common-onnx')
     expect(req.vadBackend).toBe('funasr_onnx_vad')
     expect(req.vadQuantize).toBe(true)
-    expect(req.puncModelName).toBe('iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch')
+    expect(req.puncModelName).toBe('damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx')
     expect(req.puncBackend).toBe('funasr_onnx_punc')
     mockProc._emit('stdout', JSON.stringify({ id: req.id, ok: true, downloaded: true }))
 

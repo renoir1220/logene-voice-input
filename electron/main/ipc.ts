@@ -2,8 +2,8 @@ import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent, app, Menu } from
 import * as path from 'path'
 import { getConfig, saveConfig, AppConfig } from './config'
 import { recognize } from './asr'
-import { recognizeLocal, initLocalRecognizer } from './local-asr'
-import { getModelInfoList, inspectLocalModelStatus } from './model-manager'
+import { recognizeLocal, initLocalRecognizer, disposeLocalRecognizer } from './local-asr'
+import { getModelInfoList, inspectLocalModelStatus, deleteModelCache } from './model-manager'
 import { logger, getLogBuffer, clearLogs } from './logger'
 import { matchVoiceCommand } from './voice-commands'
 import { typeText, sendShortcut } from './input-sim'
@@ -514,8 +514,15 @@ export function setupIpc(
     }
   })
 
-  handle('delete-model', (_event, _modelId: string) => {
-    logger.info('FunASR 模型由 ModelScope 缓存管理，如需清理请手动删除 ~/.cache/modelscope')
+  handle('delete-model', (_event, modelId: string) => {
+    logger.info(`[Model] 删除模型: ${modelId}`)
+    try {
+      deleteModelCache(modelId)
+      disposeLocalRecognizer()
+      setAsrRuntimeStatus({ phase: 'idle', modelId: null, progress: 0, message: '模型已删除' })
+    } catch (e) {
+      logger.error(`[Model] 删除失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
   })
 
   // ── 日志 IPC ──

@@ -110,7 +110,7 @@ def create_punc_model(model_name: str, backend: str):
 
         return CT_Transformer(
             model_dir=resolve_model_dir(model_name),
-            quantize=False,
+            quantize=True,
             device_id="-1",
             intra_op_num_threads=2,
         )

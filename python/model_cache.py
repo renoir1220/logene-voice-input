@@ -16,7 +16,7 @@ _hotword_tmp: Optional[str] = None
 def resolve_model_id(model_name: str) -> str:
     """将 FunASR 短名解析为 ModelScope model_id"""
     funasr_map = {
-        "ct-punc": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+        "ct-punc": "damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx",
     }
     return funasr_map.get(model_name, model_name)
 
@@ -46,6 +46,12 @@ def validate_onnx_files(model_dir: str, backend: str, quantize: bool):
 
 
 def get_missing_onnx_files(model_dir: str, backend: str, quantize: bool):
+    # PUNC ONNX 模型只提供 model_quant.onnx，不需要常规 ASR 的文件检查
+    if backend == "funasr_onnx_punc":
+        if not os.path.exists(os.path.join(model_dir, "model_quant.onnx")):
+            return ["model_quant.onnx"]
+        return []
+
     missing = []
     if quantize:
         if not os.path.exists(os.path.join(model_dir, "model_quant.onnx")):
