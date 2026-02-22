@@ -127,6 +127,7 @@ export interface AudioInputConstraintsConfig {
   echoCancellation: boolean
   noiseSuppression: boolean
   autoGainControl: boolean
+  deviceId?: string
 }
 
 export interface AudioCaptureConfig {
@@ -329,6 +330,7 @@ function normalizeAudioInputConstraints(raw: unknown): AudioInputConstraintsConf
     autoGainControl: typeof source.autoGainControl === 'boolean'
       ? source.autoGainControl
       : defaultConfig.audioCapture.inputConstraints.autoGainControl,
+    deviceId: typeof source.deviceId === 'string' && source.deviceId ? source.deviceId : undefined,
   }
 }
 

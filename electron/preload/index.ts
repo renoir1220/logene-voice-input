@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 重写专用通道
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),
+  showFloatContextMenu: () => ipcRenderer.invoke('show-float-context-menu'),
   closeRewrite: () => ipcRenderer.invoke('close-rewrite'),
   executeRewrite: (text: string, instruction: string) => ipcRenderer.invoke('execute-rewrite', text, instruction),
   replaceText: (newText: string) => ipcRenderer.invoke('replace-text', newText),

@@ -444,6 +444,8 @@ export async function loadConfigToForm() {
     ;(document.getElementById('asr-mode-local') as HTMLInputElement).checked = asrMode === 'local'
     updateAsrModeUI(asrMode)
     await withTimeout(renderModelList(cfg.asr?.localModel), 8000, 'render-model-list')
+    // 枚举麦克风设备并填充下拉
+    await populateAudioInputDevices(cfg.audioCapture?.inputConstraints?.deviceId || '')
   } catch (e) {
     console.error('[Dashboard] loadConfigToForm failed:', e)
     setModelListHint(`初始化失败：${String(e)}`, true)
@@ -489,6 +491,17 @@ export async function saveConfig() {
       prompts: collectTaskPromptsFromForm(cfg.llm.prompts),
     }
     cfg.textRules = collectTextRulesFromForm(cfg.textRules)
+    // 保存麦克风设备选择
+    const deviceSelect = document.getElementById('cfg-audio-input-device') as HTMLSelectElement | null
+    if (deviceSelect) {
+      cfg.audioCapture = {
+        ...cfg.audioCapture,
+        inputConstraints: {
+          ...cfg.audioCapture.inputConstraints,
+          deviceId: deviceSelect.value || undefined,
+        },
+      }
+    }
     await window.electronAPI.saveConfig(cfg)
     hint.textContent = needsRestart ? '已保存，热键变更需重启后生效' : '已保存'
     hint.style.color = '#4ade80'
@@ -763,4 +776,25 @@ export async function saveHotwords() {
 
 export function setHotwordSearchQuery(query: string) {
   hotwordSearchQuery = query
+}
+
+// 枚举音频输入设备并填充下拉列表
+async function populateAudioInputDevices(savedDeviceId: string): Promise<void> {
+  const select = document.getElementById('cfg-audio-input-device') as HTMLSelectElement | null
+  if (!select) return
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const audioInputs = devices.filter((d) => d.kind === 'audioinput')
+    // 保留默认选项，清空其余
+    while (select.options.length > 1) select.remove(1)
+    for (const device of audioInputs) {
+      const opt = document.createElement('option')
+      opt.value = device.deviceId
+      opt.textContent = device.label || `麦克风 ${select.options.length}`
+      select.appendChild(opt)
+    }
+    if (savedDeviceId) select.value = savedDeviceId
+  } catch {
+    // 权限未授予时 enumerateDevices 可能返回空标签，静默处理
+  }
 }

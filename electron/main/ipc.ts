@@ -1,4 +1,4 @@
-import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent, app } from 'electron'
+import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent, app, Menu } from 'electron'
 import * as path from 'path'
 import { getConfig, saveConfig, AppConfig } from './config'
 import { recognize } from './asr'
@@ -267,7 +267,7 @@ export function setupIpc(
     return true
   })
 
-  handle('open-dashboard', () => {
+  function openDashboardWindow() {
     if (dashboardWindow) {
       if (dashboardWindow.isMinimized()) dashboardWindow.restore()
       dashboardWindow.show()
@@ -281,8 +281,13 @@ export function setupIpc(
       minWidth: 640,
       minHeight: 480,
       title: '朗珈语音输入法 - 控制台',
+      icon: app.isPackaged
+        ? path.join(process.resourcesPath, 'icon.png')
+        : path.join(__dirname, '../../build/icons/icon.png'),
       titleBarStyle: 'hidden',
-      trafficLightPosition: { x: 14, y: 14 },
+      ...(process.platform === 'darwin'
+        ? { trafficLightPosition: { x: 14, y: 14 } }
+        : { titleBarOverlay: { color: '#f1f5f9', symbolColor: '#64748b', height: 36 } }),
       webPreferences: {
         preload: path.join(__dirname, '../preload/index.js'),
         contextIsolation: true,
@@ -304,7 +309,33 @@ export function setupIpc(
     win.on('closed', () => {
       setDashboardWindow(null)
     })
+  }
+
+  handle('show-float-context-menu', () => {
+    const menu = Menu.buildFromTemplate([
+      {
+        label: mainWindow?.isVisible() ? '隐藏窗口' : '显示窗口',
+        click: () => {
+          if (mainWindow?.isVisible()) mainWindow.hide()
+          else mainWindow?.showInactive()
+          updateTrayMenu()
+        },
+      },
+      {
+        label: vadEnabled ? '关闭 VAD 智能模式' : '开启 VAD 智能模式',
+        click: () => {
+          setVadEnabledState(!vadEnabled, true)
+        },
+      },
+      { type: 'separator' },
+      { label: '打开控制台', click: () => { openDashboardWindow() } },
+      { type: 'separator' },
+      { label: '退出', click: () => app.quit() },
+    ])
+    if (mainWindow) menu.popup({ window: mainWindow })
   })
+
+  handle('open-dashboard', () => openDashboardWindow())
 
   handle('restart-app', () => {
     logger.info('[App] 收到重启请求')
@@ -319,6 +350,25 @@ export function setupIpc(
     const buf = Buffer.from(wavBuffer)
     const asrMode = cfg.asr?.mode ?? 'api'
     logger.info(`[ASR#${reqId}] 收到 WAV，大小 ${buf.byteLength} 字节，模式: ${asrMode}`)
+
+    // 音频过短（< 0.5s）时跳过识别，避免模型对静音产生幻觉输出
+    // 16kHz 16-bit mono: 32000 字节/秒，0.5s = 16000 字节 + 44 字节 WAV 头
+    const MIN_WAV_BYTES = 16044
+    if (buf.byteLength < MIN_WAV_BYTES) {
+      logger.info(`[ASR#${reqId}] WAV 过短 (${buf.byteLength} < ${MIN_WAV_BYTES})，跳过识别`)
+      return ''
+    }
+
+    // 检测音频能量，静音或极低能量时跳过识别（避免模型幻觉）
+    const pcmData = new Int16Array(buf.buffer, buf.byteOffset + 44, (buf.byteLength - 44) / 2)
+    let sumSq = 0
+    for (let i = 0; i < pcmData.length; i++) sumSq += pcmData[i] * pcmData[i]
+    const rms = Math.sqrt(sumSq / pcmData.length)
+    const SILENCE_RMS_THRESHOLD = 80  // 16-bit PCM，低于此值视为静音
+    if (rms < SILENCE_RMS_THRESHOLD) {
+      logger.info(`[ASR#${reqId}] 音频能量过低 (rms=${rms.toFixed(1)} < ${SILENCE_RMS_THRESHOLD})，跳过识别`)
+      return ''
+    }
 
     let rawText: unknown
     try {
@@ -339,9 +389,12 @@ export function setupIpc(
     if (!text.trim()) return ''
 
     const result = matchVoiceCommand(text, cfg.voiceCommands)
-    const selfFrontmost = await focusController.isSelfAppFrontmost(`asr#${reqId}`)
     const fallbackTarget = focusController.getLastExternalAppId()
     const focusTarget = prevAppId || fallbackTarget
+    // Windows 上 isSelfAppId 始终返回 false，跳过 PowerShell 调用直接尝试还原焦点
+    const selfFrontmost = process.platform !== 'win32'
+      ? await focusController.isSelfAppFrontmost(`asr#${reqId}`)
+      : false
     if (selfFrontmost) {
       logger.debug(
         `[ASR#${reqId}] skip restore because self app is frontmost prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'}`,

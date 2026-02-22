@@ -142,9 +142,20 @@ function spawnSidecar(): Promise<void> {
     let args: string[]
 
     if (isDev) {
-      // 开发模式：直接用 python3 运行脚本
-      cmd = 'python3'
-      args = [path.join(__dirname, '../../python/asr_server.py')]
+      // 开发模式：优先使用编译好的 sidecar（省掉 Python 包导入耗时），回退到 venv Python
+      const platform = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux'
+      const ext = process.platform === 'win32' ? '.exe' : ''
+      const devSidecar = path.join(__dirname, `../../dist/sidecar/${platform}/asr_server/asr_server${ext}`)
+      if (fs.existsSync(devSidecar)) {
+        cmd = devSidecar
+        args = []
+      } else {
+        const venvPython = process.platform === 'win32'
+          ? path.join(__dirname, '../../python/.venv/Scripts/python.exe')
+          : path.join(__dirname, '../../python/.venv/bin/python3')
+        cmd = fs.existsSync(venvPython) ? venvPython : (process.platform === 'win32' ? 'python' : 'python3')
+        args = [path.join(__dirname, '../../python/asr_server.py')]
+      }
     } else {
       // 生产模式：使用 PyInstaller 打包的二进制
       const platform = process.platform === 'win32' ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux'
@@ -381,7 +392,9 @@ export async function initLocalRecognizer(
   }
 
   // 确保 sidecar 已启动
+  const spawnStart = Date.now()
   await spawnSidecar()
+  logger.info(`[ASR] sidecar 启动耗时: ${Date.now() - spawnStart}ms`)
 
   logger.info(`正在加载本地模型: ${modelInfo.name}`)
 
@@ -397,6 +410,7 @@ export async function initLocalRecognizer(
   try {
     // 发送 init 命令，sidecar 会按模型后端初始化（onnx）
     // 超时 10 分钟：首次可能需要下载并导出模型
+    const initStart = Date.now()
     const initResp = await sendRequest({
       cmd: 'init',
       modelName: modelInfo.funasrModel,
@@ -410,6 +424,7 @@ export async function initLocalRecognizer(
       puncBackend: puncEnabled ? modelInfo.puncBackend : '',
       hotwords,
     }, 600000)
+    logger.info(`[ASR] 模型 init 命令耗时: ${Date.now() - initStart}ms`)
 
     const hs = initResp?.hotwordStats
     if (hs && typeof hs === 'object') {

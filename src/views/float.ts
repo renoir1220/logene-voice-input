@@ -98,7 +98,7 @@ export function initFloatCapsuleUI() {
   })
   recordBtn.addEventListener('contextmenu', (e) => {
     e.preventDefault()
-    if (!dragMoved) window.electronAPI.openDashboard()
+    if (!dragMoved) window.electronAPI.showFloatContextMenu()
   })
 
   // VAD 按钮

@@ -66,23 +66,9 @@ function getFKeyCode(fKey: string): number {
   return map[fKey] ?? 0
 }
 
-// Windows：PowerShell SendKeys
+// Windows：koffi keybd_event
 async function sendShortcutWin(shortcut: string): Promise<void> {
-  const parts = shortcut.toUpperCase().split('+').map(s => s.trim())
-  const modMap: Record<string, string> = {
-    ALT: '%', CTRL: '^', CONTROL: '^', SHIFT: '+',
-  }
-  let mods = ''
-  let mainKey = ''
-  for (const part of parts) {
-    if (modMap[part]) mods += modMap[part]
-    else mainKey = part
-  }
-  const sendKey = mainKey.length === 1 ? mainKey.toLowerCase() : `{${mainKey}}`
-  const keys = `${mods}${sendKey}`
-  await execAsync(
-    `powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${keys}')"`,
-  )
+  ;(require('./win32-focus') as typeof import('./win32-focus')).win32SendShortcut(shortcut)
 }
 
 // Linux：xdotool
@@ -101,9 +87,7 @@ export async function pasteClipboard(): Promise<void> {
   if (process.platform === 'darwin') {
     await execAsync(`osascript -e 'tell application "System Events" to keystroke "v" using {command down}'`)
   } else if (process.platform === 'win32') {
-    await execAsync(
-      `powershell -command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"`,
-    )
+    ;(require('./win32-focus') as typeof import('./win32-focus')).win32PasteClipboard()
   } else {
     await execAsync('xdotool key ctrl+v')
   }

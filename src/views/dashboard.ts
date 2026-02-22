@@ -158,7 +158,7 @@ export function initDashboardUI() {
 
   initTabs()
   loadConfigToForm()
-  void initFirstUseOnboarding()
+  // void initFirstUseOnboarding()  // 暂时关闭引导
   renderCommandEditor()
   loadHotwords()
   loadLogs()

@@ -124,7 +124,8 @@ export function insertRecognition(params: {
 
 /** 插入一条应用日志（自动裁剪旧日志） */
 export function insertAppLog(params: AppLogRecord) {
-  const d = getDb()
+  if (!db) return  // initDb 尚未完成时静默跳过，日志已写入文件缓冲
+  const d = db
   d.run(`INSERT INTO app_logs (time, level, msg) VALUES (?, ?, ?)`,
     [params.time, params.level, params.msg])
   d.run(`DELETE FROM app_logs WHERE id <= COALESCE((SELECT MAX(id) - ? FROM app_logs), -1)`,
@@ -134,7 +135,8 @@ export function insertAppLog(params: AppLogRecord) {
 
 /** 获取最近日志（按时间正序） */
 export function getRecentLogs(limit = 2000): AppLogRecord[] {
-  const d = getDb()
+  if (!db) return []
+  const d = db
   const rows = queryAll<AppLogRecord>(d,
     'SELECT time, level, msg FROM app_logs ORDER BY id DESC LIMIT ?', [limit])
   return rows.reverse()

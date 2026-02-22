@@ -128,12 +128,16 @@ function safeJson(value: unknown): string {
 
 function buildAudioConstraints(config: AudioCaptureConfig): MediaTrackConstraints {
   const channelCount = config.inputConstraints.channelCount
-  return {
+  const constraints: MediaTrackConstraints = {
     channelCount: channelCount === 1 ? { ideal: 1, max: 1 } : { ideal: channelCount },
     echoCancellation: config.inputConstraints.echoCancellation,
     noiseSuppression: config.inputConstraints.noiseSuppression,
     autoGainControl: config.inputConstraints.autoGainControl,
   }
+  if (config.inputConstraints.deviceId) {
+    constraints.deviceId = { exact: config.inputConstraints.deviceId }
+  }
+  return constraints
 }
 
 function applySpeechContentHint(stream: MediaStream, reason: 'capture' | 'vad'): void {
@@ -231,7 +235,12 @@ export async function startCapture(): Promise<void> {
   if (isCapturing) return
 
   await initMic()
-  audioCtx = new AudioContext({ sampleRate: PCM_SAMPLE_RATE })
+
+  // 复用已有 AudioContext，避免 Windows 上每次重建的延迟
+  if (!audioCtx || audioCtx.state === 'closed') {
+    audioCtx = new AudioContext({ sampleRate: PCM_SAMPLE_RATE })
+    workletModuleReady = false
+  }
   await audioCtx.resume()
   captureSource = audioCtx.createMediaStreamSource(mediaStream!)
   pcmSamples = []
@@ -302,21 +311,15 @@ export async function stopCapture(): Promise<ArrayBuffer> {
     }
     isCapturing = false
 
-    try { source.disconnect() } catch { /* ignore */ }
+    // 先清空旧 worklet 的消息处理器，防止延迟消息污染下次录音
+    if (workletNode) workletNode.port.onmessage = null
+    try { source?.disconnect() } catch { /* ignore */ }
     try { workletNode?.disconnect() } catch { /* ignore */ }
-    try { processor.disconnect() } catch { /* ignore */ }
+    try { processor?.disconnect() } catch { /* ignore */ }
     scriptProcessor = null
     captureSource = null
     captureWorkletNode = null
-    audioCtx = null
-
-    try {
-      if (ctx.state !== 'closed') {
-        await ctx.close()
-      }
-    } catch {
-      // ignore close failure
-    }
+    // AudioContext 保留复用，不关闭（避免 Windows 上重建延迟）
 
     const chunks = pcmSamples
     pcmSamples = []
@@ -351,7 +354,7 @@ async function createCaptureWorkletNode(ctx: AudioContext): Promise<AudioWorklet
 
   try {
     if (!workletModuleReady) {
-      await ctx.audioWorklet.addModule(new URL('./worklets/pcm-capture-processor.js', import.meta.url))
+      await ctx.audioWorklet.addModule('/worklets/pcm-capture-processor.js')
       workletModuleReady = true
     }
     const node = new AudioWorkletNode(ctx, CAPTURE_WORKLET_NAME, {

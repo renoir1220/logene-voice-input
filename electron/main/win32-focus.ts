@@ -1,0 +1,93 @@
+/**
+ * Windows 专用：通过 koffi 直接调用 user32.dll，
+ * 替代 PowerShell + Add-Type 方案，消除每次 ~500ms 的 C# 编译延迟。
+ * 此文件仅在 Windows 上加载，不影响 macOS/Linux 代码路径。
+ */
+
+import koffi from 'koffi'
+
+type KoffiFunc = (...args: unknown[]) => unknown
+
+let _GetForegroundWindow: KoffiFunc | null = null
+let _SetForegroundWindow: KoffiFunc | null = null
+let _keybd_event: KoffiFunc | null = null
+
+function loadUser32(): void {
+  if (_GetForegroundWindow) return
+  const user32 = koffi.load('user32.dll')
+  _GetForegroundWindow = user32.func('intptr_t __stdcall GetForegroundWindow()')
+  _SetForegroundWindow = user32.func('bool __stdcall SetForegroundWindow(intptr_t hWnd)')
+  _keybd_event = user32.func('void __stdcall keybd_event(uint8 bVk, uint8 bScan, uint32 dwFlags, uintptr_t dwExtraInfo)')
+}
+
+// 仅在 Windows 上预加载，macOS/Linux 不执行
+if (process.platform === 'win32') {
+  loadUser32()
+}
+
+/** 获取当前前台窗口句柄，返回十进制字符串 */
+export function getWin32ForegroundWindow(): string | null {
+  try {
+    const hwnd = _GetForegroundWindow!() as bigint | number
+    if (!hwnd) return null
+    return String(hwnd)
+  } catch {
+    return null
+  }
+}
+
+/** 将指定句柄的窗口设为前台，hwnd 为十进制字符串 */
+export function setWin32ForegroundWindow(hwnd: string): boolean {
+  try {
+    return Boolean(_SetForegroundWindow!(BigInt(hwnd)))
+  } catch {
+    return false
+  }
+}
+
+const KEYEVENTF_KEYUP = 0x0002
+const VK_CONTROL = 0x11
+const VK_SHIFT = 0x10
+const VK_MENU = 0x12  // Alt
+const VK_V = 0x56
+
+/** 模拟 Ctrl+V 粘贴 */
+export function win32PasteClipboard(): void {
+  _keybd_event!(VK_CONTROL, 0, 0, 0)
+  _keybd_event!(VK_V, 0, 0, 0)
+  _keybd_event!(VK_V, 0, KEYEVENTF_KEYUP, 0)
+  _keybd_event!(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+}
+
+/** 虚拟键码映射 */
+const VK_MAP: Record<string, number> = {
+  ALT: VK_MENU, CTRL: VK_CONTROL, CONTROL: VK_CONTROL, SHIFT: VK_SHIFT,
+  SPACE: 0x20, ENTER: 0x0D, RETURN: 0x0D, TAB: 0x09,
+  ESCAPE: 0x1B, ESC: 0x1B, BACKSPACE: 0x08, DELETE: 0x2E, DEL: 0x2E,
+  UP: 0x26, DOWN: 0x28, LEFT: 0x25, RIGHT: 0x27,
+  F1: 0x70, F2: 0x71, F3: 0x72, F4: 0x73, F5: 0x74, F6: 0x75,
+  F7: 0x76, F8: 0x77, F9: 0x78, F10: 0x79, F11: 0x7A, F12: 0x7B,
+}
+
+/** 模拟快捷键，如 "ALT+R"、"CTRL+SHIFT+F2" */
+export function win32SendShortcut(shortcut: string): void {
+  const parts = shortcut.toUpperCase().split('+').map(s => s.trim())
+  const modifiers: number[] = []
+  const keys: number[] = []
+
+  for (const part of parts) {
+    const modVk = ({ ALT: VK_MENU, CTRL: VK_CONTROL, CONTROL: VK_CONTROL, SHIFT: VK_SHIFT } as Record<string, number>)[part]
+    if (modVk) {
+      modifiers.push(modVk)
+    } else {
+      const vk = VK_MAP[part] ?? (part.length === 1 ? part.charCodeAt(0) : 0)
+      if (vk) keys.push(vk)
+    }
+  }
+
+  for (const vk of modifiers) _keybd_event!(vk, 0, 0, 0)
+  for (const vk of keys) _keybd_event!(vk, 0, 0, 0)
+  for (const vk of [...keys].reverse()) _keybd_event!(vk, 0, KEYEVENTF_KEYUP, 0)
+  for (const vk of [...modifiers].reverse()) _keybd_event!(vk, 0, KEYEVENTF_KEYUP, 0)
+}
+

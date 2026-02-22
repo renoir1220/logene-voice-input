@@ -9,11 +9,12 @@
     "preview": "electron-vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sidecar:install": "pip install -r python/requirements.txt",
-    "sidecar:build": "python3 python/build_sidecar.py"
+    "sidecar:install": "pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r python/requirements.txt",
+    "sidecar:build": "python python/build_sidecar.py"
   },
   "dependencies": {
     "electron-store": "^8.2.0",
+    "koffi": "^2.15.1",
     "marked": "^17.0.3",
     "sql.js": "^1.14.0",
     "uiohook-napi": "^1.5.4"
@@ -55,6 +56,11 @@
           "filter": [
             "**/*"
           ]
+        },
+        {
+          "from": "resources/",
+          "to": ".",
+          "filter": ["icon.png"]
         }
       ]
     },

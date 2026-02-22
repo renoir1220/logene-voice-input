@@ -12,6 +12,7 @@ declare global {
       getAsrRuntimeStatus: () => Promise<AsrRuntimeStatus>
       recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) => Promise<string>
       openDashboard: () => Promise<void>
+      showFloatContextMenu: () => Promise<void>
       getWindowPosition: () => Promise<[number, number]>
       setWindowPosition: (x: number, y: number) => Promise<void>
       getModelStatuses: () => Promise<ModelStatus[]>
@@ -158,6 +159,7 @@ export interface AudioInputConstraintsConfig {
   echoCancellation: boolean
   noiseSuppression: boolean
   autoGainControl: boolean
+  deviceId?: string
 }
 
 export interface AudioCaptureConfig {

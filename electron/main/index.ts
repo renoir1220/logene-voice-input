@@ -83,6 +83,7 @@ function createWindow() {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   })
   setMainWindow(win)
@@ -93,33 +94,33 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+  // 窗口透明，无需等 ready-to-show，立即显示避免启动延迟
+  win.showInactive()
+  updateTrayMenu()
 
   win.setFocusable(false)
   win.setAlwaysOnTop(true, 'floating', 1)
   win.once('ready-to-show', () => {
     logger.info('[Window] ready-to-show')
-    mainWindow?.showInactive()
-    updateTrayMenu()
   })
   win.webContents.on('did-finish-load', () => {
     logger.info('[Window] did-finish-load')
     emitAsrRuntimeStatus()
   })
-  setTimeout(() => {
-    if (mainWindow && !mainWindow.isVisible()) {
-      logger.warn('[Window] ready-to-show timeout, fallback showInactive')
-      mainWindow.showInactive()
-      updateTrayMenu()
-    }
-  }, 1800)
-
   win.on('closed', () => { setMainWindow(null) })
 }
 
 // ── 系统托盘 ──
 
+function getIconPath(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'icon.png')
+  }
+  return path.join(__dirname, '../../build/icons/icon.png')
+}
+
 function createTray() {
-  const icon = nativeImage.createEmpty()
+  const icon = nativeImage.createFromPath(getIconPath()).resize({ width: 16, height: 16 })
   const t = new Tray(icon)
   setTray(t)
   t.setToolTip('朗珈语音输入法')
@@ -159,32 +160,46 @@ function updateTrayMenu() {
 
 registerProcessErrorHooks(app)
 
+// Windows 渲染性能优化：
+// 1. 禁用代理自动检测，避免加载 localhost 时 10-30 秒的代理探测延迟
+// 2. 禁用 CalculateNativeWinOcclusion，避免 focusable:false 窗口被节流
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('no-proxy-server')
+  app.commandLine.appendSwitch('disable-renderer-backgrounding')
+  app.commandLine.appendSwitch('disable-background-timer-throttling')
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+}
+
 app.whenReady().then(async () => {
+  const t0 = Date.now()
+  const ts = () => `+${Date.now() - t0}ms`
+
   initLogger((entry) => {
     mainWindow?.webContents.send('log-entry', entry)
   })
   logger.info('应用启动')
 
-  logger.info('[Startup] initDb')
+  logger.info(`[Startup] initDb ${ts()}`)
   await initDb()
 
-  logger.info('[Startup] setupIpc')
+  logger.info(`[Startup] setupIpc ${ts()}`)
   const config = getConfig()
   setVadEnabled(Boolean(config.vad?.enabled))
   setupIpc(focusController, setVadEnabledState, updateTrayMenu)
 
-  logger.info('[Startup] initRewriteWindow')
+  logger.info(`[Startup] initRewriteWindow ${ts()}`)
   initRewriteWindow()
-  logger.info('[Startup] createWindow')
+  logger.info(`[Startup] createWindow ${ts()}`)
   createWindow()
-  logger.info('[Startup] createTray')
+  logger.info(`[Startup] createTray ${ts()}`)
   createTray()
-  logger.info('[Startup] startFocusTracker')
+  logger.info(`[Startup] startFocusTracker ${ts()}`)
   focusController.startTracking()
-  logger.info('[Startup] checkPermissions')
+  logger.info(`[Startup] checkPermissions ${ts()}`)
   const permissionsReady = await checkPermissionsAndGuide('startup', true)
+  logger.info(`[Startup] checkPermissions done ${ts()}`)
   if (permissionsReady) {
-    logger.info('[Startup] registerHotkey')
+    logger.info(`[Startup] registerHotkey ${ts()}`)
     try {
       registerHotkey(focusController, setVadEnabledState)
     } catch (e) {
@@ -194,13 +209,11 @@ app.whenReady().then(async () => {
   } else {
     logger.warn('[Startup] 权限未就绪，热键与焦点控制功能暂停。请授权后重启应用。')
   }
-  logger.info('[Startup] ready')
+  logger.info(`[Startup] ready ${ts()}`)
 
+  // 提前 spawn sidecar 进程（不等模型加载），与渲染进程并行预热
   if ((getConfig().asr?.mode ?? 'api') === 'local') {
     void ensureLocalRecognizerReady('startup').catch(() => { })
-  } else {
-    // emit idle status for remote mode
-    emitAsrRuntimeStatus()
   }
 
   app.on('activate', () => {

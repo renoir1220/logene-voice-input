@@ -90,9 +90,10 @@ export function registerHotkey(
     if (e.metaKey !== parsed.meta) return
 
     isRecording = true
+    // 先通知渲染进程开始录音，不等焦点快照（避免 Windows 上 PowerShell 延迟）
+    mainWindow?.webContents.send('hotkey-state', 'recording')
     prevApp = await focusController.captureSnapshot('hotkey-keydown')
     logger.info(`[热键] 按下，开始录音，前台应用: ${prevApp ?? 'null'}`)
-    mainWindow?.webContents.send('hotkey-state', 'recording')
   })
 
   uIOhook.on('keyup', (e) => {
@@ -115,9 +116,10 @@ export function registerHotkey(
   const registered = globalShortcut.register(config.hotkey.record, async () => {
     if (!isRecording) {
       isRecording = true
+      // 先通知渲染进程，再异步获取焦点快照
+      mainWindow?.webContents.send('hotkey-state', 'recording')
       prevApp = await focusController.captureSnapshot('hotkey-shortcut-fallback')
       console.log('[热键/拦截网] 捕获按下，开始录音，前台应用:', prevApp)
-      mainWindow?.webContents.send('hotkey-state', 'recording')
     }
   })
 

@@ -25,7 +25,17 @@
   padding: 44px 10px 16px;
   gap: 4px;
   -webkit-app-region: drag;
-  /* 左侧大片空白都可以作为底拖动区；顶部 44px 给 macOS 红绿灯留空间 */
+  /* 顶部 44px 给 macOS 红绿灯留空间；Windows 用 titleBarOverlay 自带控制按钮 */
+}
+
+/* Windows 上不需要给红绿灯留空间 */
+@supports (-ms-ime-align: auto) {
+  .sidebar { padding-top: 10px; }
+}
+
+/* 更可靠的 Windows 检测：通过 HTML data 属性 */
+html[data-platform="win32"] .sidebar {
+  padding-top: 10px;
 }
 
 .sidebar-brand {

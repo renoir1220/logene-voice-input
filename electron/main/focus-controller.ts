@@ -52,11 +52,7 @@ export async function getFrontmostApp(): Promise<string | null> {
     if (process.platform === 'darwin') {
       return await getFrontmostAppDarwin()
     } else if (process.platform === 'win32') {
-      const { stdout } = await execAsync(
-        `powershell -command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class W { [DllImport(\\"user32.dll\\")] public static extern IntPtr GetForegroundWindow(); }'; [W]::GetForegroundWindow()"`,
-        { timeout: 1200 },
-      )
-      return stdout.trim() || null
+      return (require('./win32-focus') as typeof import('./win32-focus')).getWin32ForegroundWindow()
     } else {
       const { stdout } = await execAsync('xdotool getactivewindow', { timeout: 1200 })
       return stdout.trim() || null
@@ -76,10 +72,7 @@ export async function restoreFocus(appId: string | null): Promise<void> {
         { timeout: 1500 },
       )
     } else if (process.platform === 'win32') {
-      await execAsync(
-        `powershell -command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class W { [DllImport(\\"user32.dll\\")] public static extern bool SetForegroundWindow(IntPtr hWnd); }'; [W]::SetForegroundWindow(${appId})"`,
-        { timeout: 1500 },
-      )
+      ;(require('./win32-focus') as typeof import('./win32-focus')).setWin32ForegroundWindow(appId)
     } else {
       await execAsync(`xdotool windowfocus ${appId}`, { timeout: 1500 })
     }
@@ -138,6 +131,18 @@ export class FocusController {
   }
 
   async captureSnapshot(reason: string, logResult = true): Promise<string | null> {
+    // tracker 已在后台持续更新 lastExternalAppId 缓存。
+    // 非 tracker 自身调用时直接返回缓存值，避免 Windows 上每次启动 PowerShell 进程的延迟。
+    if (reason !== 'tracker' && this.tracker !== null) {
+      const chosen = this.lastExternalAppId
+      if (logResult && this.debugTrace) {
+        logger.debug(
+          `[Focus] snapshot reason=${reason} using cached lastExternal=${chosen ?? 'null'}`,
+        )
+      }
+      return chosen
+    }
+
     const current = await this.getCurrentFrontmost()
     const chosen = current && !this.options.isSelfAppId(current)
       ? current
