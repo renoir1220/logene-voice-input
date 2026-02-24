@@ -181,7 +181,7 @@ function spawnSidecar(): Promise<void> {
 
     const child = spawn(cmd, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONUTF8: '1' },
     })
 
     let started = false

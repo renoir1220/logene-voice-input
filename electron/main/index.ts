@@ -176,6 +176,7 @@ app.whenReady().then(async () => {
 
   initLogger((entry) => {
     mainWindow?.webContents.send('log-entry', entry)
+    dashboardWindow?.webContents.send('log-entry', entry)
   })
   logger.info('应用启动')
 

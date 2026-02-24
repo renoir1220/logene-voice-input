@@ -2,6 +2,7 @@
 #float-capsule-view {
   align-items: center;
   justify-content: center;
+  position: relative;
 }
 
 .capsule-container {
@@ -253,4 +254,48 @@
 .status-zone,
 .vad-indicator {
   display: none !important;
+}
+
+/* ── 状态文字 ── */
+.status-text {
+  display: none;
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+  pointer-events: none;
+}
+
+/* ── 错误提示条 ── */
+.error-bar {
+  display: none;
+  position: absolute;
+  bottom: -28px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(239, 68, 68, 0.92);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+  z-index: 100;
+}
+
+.error-bar.visible {
+  display: block;
+  animation: error-fade-in 0.2s ease-out;
+}
+
+@keyframes error-fade-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }

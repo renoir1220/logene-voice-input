@@ -207,7 +207,21 @@ async function initMic(): Promise<void> {
   }
 
   const constraints = buildAudioConstraints(runtimeAudioCaptureConfig)
-  mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false })
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false })
+  } catch (e) {
+    const err = e as DOMException
+    console.error(`[录音] 麦克风初始化失败: ${err.name}: ${err.message}`)
+    if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+      throw new Error('未检测到麦克风设备，请连接麦克风后重试')
+    } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      throw new Error('麦克风权限被拒绝，请在系统设置中允许访问麦克风')
+    } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+      throw new Error('麦克风被其他应用占用或无法读取，请关闭其他录音程序后重试')
+    } else {
+      throw new Error(`麦克风初始化失败: ${err.message || err.name}`)
+    }
+  }
   mediaStreamConstraintVersion = inputConstraintVersion
   applySpeechContentHint(mediaStream, 'capture')
   logTrackDiagnostics(mediaStream, 'capture', constraints)
