@@ -13,7 +13,7 @@ ASR Sidecar 进程 — 基于 FunASR，通过 stdin/stdout JSON 协议与 Electr
       "vadBackend":"funasr_onnx_vad",
       "vadQuantize":true,
       "usePunc":true,
-      "puncModelName":"damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx",
+      "puncModelName":"iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx",
       "puncBackend":"funasr_onnx_punc",
       "hotwords":"肉眼所见 鳞状上皮"
     }

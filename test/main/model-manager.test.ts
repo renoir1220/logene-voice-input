@@ -15,7 +15,7 @@ describe('model-manager', () => {
       vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
       vadBackend: 'funasr_onnx_vad',
       vadQuantized: true,
-      puncModel: 'damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx',
+      puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx',
       puncBackend: 'funasr_onnx_punc',
     })
     try {

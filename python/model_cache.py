@@ -16,7 +16,7 @@ _hotword_tmp: Optional[str] = None
 def resolve_model_id(model_name: str) -> str:
     """将 FunASR 短名解析为 ModelScope model_id"""
     funasr_map = {
-        "ct-punc": "damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx",
+        "ct-punc": "iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx",
     }
     return funasr_map.get(model_name, model_name)
 
@@ -199,9 +199,19 @@ def download_model_with_progress(dependencies, msg_id: int):
             resolved = resolve_model_id(model_name)
             if is_model_cached(resolved):
                 if backend.startswith("funasr_onnx"):
-                    validate_onnx_files(get_model_cache_path(resolved), backend, quantize)
-                send_json({"id": msg_id, "progress": next_progress})
-                continue
+                    try:
+                        validate_onnx_files(get_model_cache_path(resolved), backend, quantize)
+                        send_json({"id": msg_id, "progress": next_progress})
+                        continue
+                    except RuntimeError:
+                        # 缓存不完整，删除后重新下载
+                        import shutil
+                        cache_path = get_model_cache_path(resolved)
+                        send_json({"id": msg_id, "progress": base_progress, "status": f"{role}模型缓存不完整，正在重新下载..."})
+                        shutil.rmtree(cache_path, ignore_errors=True)
+                else:
+                    send_json({"id": msg_id, "progress": next_progress})
+                    continue
 
             send_json(
                 {

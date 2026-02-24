@@ -51,7 +51,7 @@ export function isHotwordCapableModel(model: ModelInfo): boolean {
 }
 
 const FUNASR_MODEL_ID_MAP: Record<string, string> = {
-  'ct-punc': 'damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx',
+  'ct-punc': 'iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx',
 }
 
 function resolveModelId(modelName: string): string {
@@ -197,7 +197,7 @@ export const MODELS: ModelInfo[] = [
     vadModel: 'iic/speech_fsmn_vad_zh-cn-16k-common-onnx',
     vadBackend: 'funasr_onnx_vad',
     vadQuantized: true,
-    puncModel: 'damo/punc_ct-transformer_cn-en-common-vocab471067-large-onnx',
+    puncModel: 'iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx',
     puncBackend: 'funasr_onnx_punc',
   },
 ]

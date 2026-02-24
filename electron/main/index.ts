@@ -18,6 +18,7 @@ import { isSelfAppId } from './self-app'
 import { initRewriteWindow } from './rewrite-window'
 import {
   mainWindow,
+  dashboardWindow,
   setMainWindow,
   setTray,
   tray,
