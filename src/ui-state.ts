@@ -100,23 +100,29 @@ export function setState(newState: RecordState | string, text?: string) {
 
 export function showError(msg: string) {
   const text = String(msg).replace(/^Error:\s*/i, '')
-  if (errorBar) {
-    errorBar.textContent = text
-    errorBar.title = text
-    errorBar.classList.add('visible')
+  // errorBar 可能尚未通过 initFloatElements 初始化，动态查找
+  const bar = errorBar || document.getElementById('error-bar') as HTMLDivElement | null
+  const st = statusText || document.getElementById('status-text') as HTMLSpanElement | null
+  if (bar) {
+    bar.textContent = text
+    bar.title = text
+    bar.classList.add('visible')
   }
-  if (statusText) {
-    statusText.textContent = '出错了'
-    statusText.classList.remove('result')
+  if (st) {
+    st.textContent = '出错了'
+    st.classList.remove('result')
   }
+  // 无论 UI 元素是否存在，都输出到控制台确保可追踪
+  console.warn(`[showError] ${text}`)
   if (errorTimer) clearTimeout(errorTimer)
   errorTimer = setTimeout(hideError, 10000)
 }
 
 export function hideError() {
-  if (errorBar) {
-    errorBar.classList.remove('visible')
-    errorBar.textContent = ''
+  const bar = errorBar || document.getElementById('error-bar') as HTMLDivElement | null
+  if (bar) {
+    bar.classList.remove('visible')
+    bar.textContent = ''
   }
   if (errorTimer) { clearTimeout(errorTimer); errorTimer = null }
 }
@@ -417,6 +423,9 @@ export function installRendererErrorHooks() {
       lineno: event.lineno || 0,
       colno: event.colno || 0,
     })
+    // 确保用户能看到错误
+    const msg = err instanceof Error ? err.message : (event.message || '未知错误')
+    showError(msg)
   })
 
   window.addEventListener('unhandledrejection', (event) => {
@@ -427,5 +436,8 @@ export function installRendererErrorHooks() {
       stack: reason instanceof Error ? reason.stack : '',
       reason: toShortErrorText(reason).slice(0, 4000),
     })
+    // 确保用户能看到错误
+    const msg = reason instanceof Error ? reason.message : String(reason)
+    showError(msg)
   })
 }
