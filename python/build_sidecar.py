@@ -21,7 +21,7 @@ EXCLUDED_MODULES = [
     "tensorflow",
     "tensorboard",
 ]
-HIDDEN_IMPORTS = [
+HIDDEN_IMPORTS: list[str] = [
     "funasr_onnx.paraformer_bin",
     "funasr_onnx.vad_bin",
     "funasr_onnx.punc_bin",
@@ -50,6 +50,51 @@ def get_platform_name() -> str:
         return "linux"
 
 
+def patch_funasr_onnx_numpy2() -> None:
+    """修补 funasr_onnx/vad_bin.py 以兼容 numpy 2.x。
+    numpy 2.x 不再允许对 1 维数组调用 int()，需要先用 .item() 转为标量。
+    """
+    # 直接通过 site-packages 路径定位，避免触发 funasr_onnx 的 import（会拉 torch）
+    import site
+    # 优先检查项目 venv
+    venv_sp = ROOT / "python" / ".venv" / "Lib" / "site-packages" / "funasr_onnx" / "vad_bin.py"
+    candidates_paths = [venv_sp] + [Path(sp) / "funasr_onnx" / "vad_bin.py" for sp in site.getsitepackages() + [site.getusersitepackages()]]
+    vad_file = None
+    for p in candidates_paths:
+        if p.exists():
+            vad_file = p
+            break
+    if vad_file is None:
+        print("跳过 patch: 未找到 funasr_onnx/vad_bin.py")
+        return
+    src = vad_file.read_text(encoding="utf-8")
+
+    # 已经 patch 过则跳过
+    marker = "# [patched] numpy2 compat"
+    if marker in src:
+        print(f"vad_bin.py 已 patch，跳过: {vad_file}")
+        return
+
+    # 在 feats, feats_len = self.extract_feat(waveform) 后面插入标量转换
+    old = "            feats, feats_len = self.extract_feat(waveform)"
+    new = (
+        "            feats, feats_len = self.extract_feat(waveform)\n"
+        "            feats_len = int(feats_len.flat[0])  " + marker
+    )
+    if old not in src:
+        print(f"警告: vad_bin.py 结构不匹配，跳过 patch: {vad_file}")
+        return
+
+    patched = src.replace(old, new, 1)
+    # feats_len 已是 int，.max() 无意义，直接替换
+    patched = patched.replace(
+        "step = int(min(feats_len.max(), 6000))",
+        "step = min(feats_len, 6000)  " + marker,
+    )
+    vad_file.write_text(patched, encoding="utf-8")
+    print(f"已 patch vad_bin.py (numpy2 兼容): {vad_file}")
+
+
 def cleanup_excluded_artifacts(sidecar_dir: Path) -> None:
     internal = sidecar_dir / "_internal"
     if not internal.exists():
@@ -75,8 +120,16 @@ def main():
     print(f"打包平台: {plat}")
     print(f"输出目录: {out_dir}")
 
+    # 打包前修补 funasr_onnx 以兼容 numpy 2.x
+    patch_funasr_onnx_numpy2()
+
+    # 优先使用项目 venv Python（包含完整依赖），回退到当前 Python
+    venv_python = ROOT / "python" / ".venv" / ("Scripts/python.exe" if platform.system().lower() == "windows" else "bin/python3")
+    python_exe = str(venv_python) if venv_python.exists() else sys.executable
+    print(f"使用 Python: {python_exe}")
+
     cmd = [
-        sys.executable, "-m", "PyInstaller",
+        python_exe, "-m", "PyInstaller",
         "--onedir",
         "--name", "asr_server",
         "--distpath", str(out_dir),

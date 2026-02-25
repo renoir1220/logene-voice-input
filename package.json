@@ -1,7 +1,7 @@
 {
   "name": "logene-voice-input",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -31,6 +31,10 @@
   "build": {
     "appId": "com.logene.voice-input.electron",
     "productName": "朗珈语音输入法",
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
     "mac": {
       "target": "dmg",
       "icon": "build/icons/icon.icns",

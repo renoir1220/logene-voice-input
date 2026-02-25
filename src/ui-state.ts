@@ -1,5 +1,5 @@
 import type { RecordState, AsrRuntimeStatus, AppConfig } from './types'
-import { startCapture, stopCapture, startVad, stopVad, setAudioCaptureConfig, VadState, VadCallbacks } from './audio'
+import { startCapture, stopCapture, startVad, stopVad, resetVadSpeakingState, setAudioCaptureConfig, VadState, VadCallbacks } from './audio'
 
 // ── 共享 UI 状态 ──
 
@@ -253,6 +253,8 @@ export async function onRecordClick() {
       showError(String(e))
     }
   } else if (state === 'recording') {
+    // 手动点击停止录音时，重置 VAD 内部状态，避免状态机卡死
+    if (vadState.enabled) resetVadSpeakingState()
     setState('recognizing')
     try {
       if (startCapturePromise) {

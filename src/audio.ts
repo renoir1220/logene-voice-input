@@ -570,6 +570,20 @@ export async function startVad(vadState: VadState, cb: VadCallbacks): Promise<vo
   }, VAD_SAMPLE_INTERVAL_MS)
 }
 
+// 重置 VAD 语音状态（手动点击停止录音时调用，避免 VAD 状态机卡死）
+export function resetVadSpeakingState(): void {
+  if (!vadIsSpeaking && !vadIsProcessing) return
+  vadIsSpeaking = false
+  vadIsProcessing = false
+  vadCapturePromise = null
+  vadPrevAppId = null
+  vadSpeakingStart = 0
+  vadSilenceStart = 0
+  vadSmoothedRms = 0
+  vadAboveThresholdSince = 0
+  vadBelowThresholdSince = 0
+}
+
 export function stopVad(): void {
   if (vadTimer) { clearInterval(vadTimer); vadTimer = null }
   try { vadSource?.disconnect() } catch { /* ignore */ }
