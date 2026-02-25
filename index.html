@@ -135,8 +135,8 @@
               <div class="card">
                 <div class="form-group">
                   <label>组合热键 (推入录音)</label>
-                  <input id="cfg-hotkey" type="text" class="input" placeholder="Alt+Space" />
-                  <span class="tip">长按此键说话。</span>
+                  <input id="cfg-hotkey" type="text" class="input" placeholder="点击后按下快捷键（如 Alt+Space）" />
+                  <span class="tip">点击输入框后按下按键录制，支持组合键，Backspace/Delete 可清空。</span>
                 </div>
                 <div class="form-group">
                   <label>输入设备 (麦克风)</label>
@@ -172,7 +172,7 @@
 
             <!-- 子页：语音指令 -->
             <div id="subtab-settings-commands" class="sub-tab-pane">
-              <p class="desc">把常用快捷键和口令绑定，说出口令后系统自动触发对应的键盘快捷键。</p>
+              <p class="desc">把常用快捷键和口令绑定，说出口令后系统自动触发对应键盘快捷键。口令会自动注入识别热词，但不会显示在热词维护列表中。</p>
               <div class="card">
                 <div id="cmd-editor-list" class="cmd-editor-list"></div>
                 <button id="add-cmd-btn" class="btn btn-outline">+ 增加映射</button>

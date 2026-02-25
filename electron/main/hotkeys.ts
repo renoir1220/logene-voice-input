@@ -60,6 +60,8 @@ function nameToKeycode(name: string): number {
     Q: UiohookKey.Q, R: UiohookKey.R, S: UiohookKey.S, T: UiohookKey.T,
     U: UiohookKey.U, V: UiohookKey.V, W: UiohookKey.W, X: UiohookKey.X,
     Y: UiohookKey.Y, Z: UiohookKey.Z,
+    0: UiohookKey['0'], 1: UiohookKey['1'], 2: UiohookKey['2'], 3: UiohookKey['3'], 4: UiohookKey['4'],
+    5: UiohookKey['5'], 6: UiohookKey['6'], 7: UiohookKey['7'], 8: UiohookKey['8'], 9: UiohookKey['9'],
   }
   return map[name] ?? 0
 }

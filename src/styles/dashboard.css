@@ -489,6 +489,12 @@ input:checked+.slider:before {
 .cmd-key-input {
   font-family: monospace;
   color: #0ea5e9;
+  cursor: pointer;
+}
+
+.capturing-hotkey {
+  background: #ecfeff !important;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.2) inset;
 }
 
 .cmd-del-btn {

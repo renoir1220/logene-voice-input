@@ -130,11 +130,12 @@ def ensure_venv() -> Path:
         subprocess.run([str(pip_exe), "install"] + deps + ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"], check=True)
         # funasr-onnx 单独用 --no-deps 安装，绕过 numpy 版本约束
         subprocess.run([str(pip_exe), "install", "funasr-onnx", "--no-deps", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"], check=True)
+        subprocess.run([str(pip_exe), "install", "pyinstaller", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"], check=True)
         print("venv 初始化完成")
     return python_exe
 
 
-
+def main():
     plat = get_platform_name()
     out_dir = ROOT / "dist" / "sidecar" / plat
 

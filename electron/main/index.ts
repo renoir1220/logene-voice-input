@@ -41,6 +41,11 @@ const focusController = new FocusController({
   isSelfAppId: (appId) => isSelfAppId(appId, process.platform, app),
 })
 
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+}
+
 function setVadEnabledState(enabled: boolean, emitToRenderer = false): boolean {
   if (vadEnabled === enabled && !emitToRenderer) return vadEnabled
   setVadEnabled(enabled)
@@ -57,6 +62,24 @@ function setVadEnabledState(enabled: boolean, emitToRenderer = false): boolean {
   }
   updateTrayMenu()
   return enabled
+}
+
+function revealMainInterface(source: string) {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.showInactive()
+    updateTrayMenu()
+    logger.info(`[App] second-instance 激活主窗口 (${source})`)
+    return
+  }
+  if (dashboardWindow) {
+    if (dashboardWindow.isMinimized()) dashboardWindow.restore()
+    dashboardWindow.show()
+    dashboardWindow.focus()
+    logger.info(`[App] second-instance 激活控制台窗口 (${source})`)
+    return
+  }
+  logger.info(`[App] second-instance 到达，但主窗口尚未初始化 (${source})`)
 }
 
 // ── 窗口创建 ──
@@ -161,6 +184,12 @@ function updateTrayMenu() {
 
 registerProcessErrorHooks(app)
 
+if (gotSingleInstanceLock) {
+  app.on('second-instance', () => {
+    revealMainInterface('second-instance')
+  })
+}
+
 // Windows 渲染性能优化：
 // 1. 禁用代理自动检测，避免加载 localhost 时 10-30 秒的代理探测延迟
 // 2. 禁用 CalculateNativeWinOcclusion，避免 focusable:false 窗口被节流
@@ -171,70 +200,72 @@ if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 }
 
-app.whenReady().then(async () => {
-  const t0 = Date.now()
-  const ts = () => `+${Date.now() - t0}ms`
+if (gotSingleInstanceLock) {
+  app.whenReady().then(async () => {
+    const t0 = Date.now()
+    const ts = () => `+${Date.now() - t0}ms`
 
-  initLogger((entry) => {
-    mainWindow?.webContents.send('log-entry', entry)
-    dashboardWindow?.webContents.send('log-entry', entry)
-  })
-  logger.info('应用启动')
+    initLogger((entry) => {
+      mainWindow?.webContents.send('log-entry', entry)
+      dashboardWindow?.webContents.send('log-entry', entry)
+    })
+    logger.info('应用启动')
 
-  logger.info(`[Startup] initDb ${ts()}`)
-  await initDb()
+    logger.info(`[Startup] initDb ${ts()}`)
+    await initDb()
 
-  logger.info(`[Startup] setupIpc ${ts()}`)
-  const config = getConfig()
-  setVadEnabled(Boolean(config.vad?.enabled))
-  setupIpc(focusController, setVadEnabledState, updateTrayMenu)
+    logger.info(`[Startup] setupIpc ${ts()}`)
+    const config = getConfig()
+    setVadEnabled(Boolean(config.vad?.enabled))
+    setupIpc(focusController, setVadEnabledState, updateTrayMenu)
 
-  logger.info(`[Startup] initRewriteWindow ${ts()}`)
-  initRewriteWindow()
-  logger.info(`[Startup] createWindow ${ts()}`)
-  createWindow()
-  logger.info(`[Startup] createTray ${ts()}`)
-  createTray()
-  logger.info(`[Startup] startFocusTracker ${ts()}`)
-  focusController.startTracking()
-  logger.info(`[Startup] checkPermissions ${ts()}`)
-  const permissionsReady = await checkPermissionsAndGuide('startup', true)
-  logger.info(`[Startup] checkPermissions done ${ts()}`)
-  if (permissionsReady) {
-    logger.info(`[Startup] registerHotkey ${ts()}`)
-    try {
-      registerHotkey(focusController, setVadEnabledState)
-    } catch (e) {
-      logger.error(String(e))
-      emitPermissionWarning(`热键初始化失败：${String(e)} 请确认系统权限已授权，然后重启应用。`)
+    logger.info(`[Startup] initRewriteWindow ${ts()}`)
+    initRewriteWindow()
+    logger.info(`[Startup] createWindow ${ts()}`)
+    createWindow()
+    logger.info(`[Startup] createTray ${ts()}`)
+    createTray()
+    logger.info(`[Startup] startFocusTracker ${ts()}`)
+    focusController.startTracking()
+    logger.info(`[Startup] checkPermissions ${ts()}`)
+    const permissionsReady = await checkPermissionsAndGuide('startup', true)
+    logger.info(`[Startup] checkPermissions done ${ts()}`)
+    if (permissionsReady) {
+      logger.info(`[Startup] registerHotkey ${ts()}`)
+      try {
+        registerHotkey(focusController, setVadEnabledState)
+      } catch (e) {
+        logger.error(String(e))
+        emitPermissionWarning(`热键初始化失败：${String(e)} 请确认系统权限已授权，然后重启应用。`)
+      }
+    } else {
+      logger.warn('[Startup] 权限未就绪，热键与焦点控制功能暂停。请授权后重启应用。')
     }
-  } else {
-    logger.warn('[Startup] 权限未就绪，热键与焦点控制功能暂停。请授权后重启应用。')
-  }
-  logger.info(`[Startup] ready ${ts()}`)
+    logger.info(`[Startup] ready ${ts()}`)
 
-  // 提前 spawn sidecar 进程（不等模型加载），与渲染进程并行预热
-  if ((getConfig().asr?.mode ?? 'api') === 'local') {
-    void ensureLocalRecognizerReady('startup').catch(() => { })
-  }
+    // 提前 spawn sidecar 进程（不等模型加载），与渲染进程并行预热
+    if ((getConfig().asr?.mode ?? 'api') === 'local') {
+      void ensureLocalRecognizerReady('startup').catch(() => { })
+    }
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
   })
-})
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
-})
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
 
-app.on('will-quit', () => {
-  closeDb()
-  disposeLocalRecognizer()
-  focusController.stopTracking()
-  try {
-    uIOhook.stop()
-  } catch {
-    // ignore
-  }
-  globalShortcut.unregisterAll()
-})
+  app.on('will-quit', () => {
+    closeDb()
+    disposeLocalRecognizer()
+    focusController.stopTracking()
+    try {
+      uIOhook.stop()
+    } catch {
+      // ignore
+    }
+    globalShortcut.unregisterAll()
+  })
+}

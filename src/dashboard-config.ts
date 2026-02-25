@@ -34,11 +34,118 @@ function normalizeModelId(raw: string, index: number): string {
 }
 
 function normalizeHotkey(raw: string): string {
-  return raw
+  const tokens = raw
     .split('+')
-    .map((p) => p.trim().toUpperCase())
+    .map((p) => normalizeHotkeyMainKey(p))
     .filter(Boolean)
-    .join('+')
+  const modifiers = HOTKEY_MODIFIER_ORDER.filter((modifier) => tokens.includes(modifier))
+  const main = tokens.find((token) => !HOTKEY_MODIFIER_SET.has(token)) ?? ''
+  return main ? [...modifiers, main].join('+') : modifiers.join('+')
+}
+
+const HOTKEY_MODIFIER_ORDER = ['CTRL', 'ALT', 'SHIFT', 'META']
+const HOTKEY_MODIFIER_SET = new Set(['CTRL', 'ALT', 'SHIFT', 'META'])
+
+function normalizeHotkeyMainKey(raw: string): string {
+  const key = raw.trim().toUpperCase()
+  if (!key) return ''
+  const alias: Record<string, string> = {
+    CONTROL: 'CTRL',
+    CMD: 'META',
+    COMMAND: 'META',
+    WIN: 'META',
+    SUPER: 'META',
+    ESCAPE: 'ESC',
+    RETURN: 'ENTER',
+    ARROWUP: 'UP',
+    ARROWDOWN: 'DOWN',
+    ARROWLEFT: 'LEFT',
+    ARROWRIGHT: 'RIGHT',
+    ' ': 'SPACE',
+  }
+  return alias[key] ?? key
+}
+
+function hotkeyFromKeyboardEvent(event: KeyboardEvent): string | null {
+  const modifiers: string[] = []
+  if (event.ctrlKey) modifiers.push('CTRL')
+  if (event.altKey) modifiers.push('ALT')
+  if (event.shiftKey) modifiers.push('SHIFT')
+  if (event.metaKey) modifiers.push('META')
+
+  let main = normalizeHotkeyMainKey(event.key)
+  if (main === 'PROCESS' || main === 'UNIDENTIFIED' || main === 'DEAD') return null
+  if (HOTKEY_MODIFIER_SET.has(main)) main = ''
+
+  if (!main) return null
+  if (main.length === 1 && /^[A-Z0-9]$/.test(main)) {
+    // keep single char key as-is
+  } else if (!/^(F([1-9]|1[0-2])|SPACE|ENTER|TAB|ESC|BACKSPACE|DELETE|UP|DOWN|LEFT|RIGHT)$/.test(main)) {
+    return null
+  }
+
+  const orderedMods = HOTKEY_MODIFIER_ORDER.filter((m) => modifiers.includes(m))
+  return [...orderedMods, main].join('+')
+}
+
+function attachHotkeyRecorder(input: HTMLInputElement): void {
+  if (input.dataset.hotkeyRecorderBound === '1') return
+  input.dataset.hotkeyRecorderBound = '1'
+  input.readOnly = true
+  input.spellcheck = false
+  if (!input.placeholder) input.placeholder = '点击后按下快捷键'
+
+  const leaveCaptureState = () => input.classList.remove('capturing-hotkey')
+  input.addEventListener('focus', () => input.classList.add('capturing-hotkey'))
+  input.addEventListener('blur', leaveCaptureState)
+  input.addEventListener('mousedown', () => input.select())
+  input.addEventListener('keydown', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    const clearByDelete = !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey
+      && (event.key === 'Backspace' || event.key === 'Delete')
+    if (clearByDelete) {
+      input.value = ''
+      leaveCaptureState()
+      return
+    }
+
+    const hotkey = hotkeyFromKeyboardEvent(event)
+    if (!hotkey) return
+    input.value = hotkey
+    leaveCaptureState()
+    input.blur()
+  })
+}
+
+function cloneScenes(scenes: HotwordScene[] | undefined): HotwordScene[] {
+  if (!Array.isArray(scenes)) return []
+  return scenes.map((scene) => ({
+    name: String(scene?.name ?? '').trim() || '未命名',
+    words: Array.isArray(scene?.words) ? scene.words.map((w) => String(w || '').trim()).filter(Boolean) : [],
+  }))
+}
+
+function stripVoiceCommandHotwords(
+  scenes: HotwordScene[] | undefined,
+  commands: Record<string, string> | undefined,
+): HotwordScene[] {
+  const cleaned = cloneScenes(scenes)
+  const commandWords = new Set(Object.keys(commands ?? {})
+    .map((word) => word.trim())
+    .filter(Boolean))
+
+  for (const scene of cleaned) {
+    scene.words = scene.words.filter((word) => !commandWords.has(word.trim()))
+  }
+
+  return cleaned.length > 0 ? cleaned : [{ name: '全局', words: [] }]
+}
+
+export function initHotkeyRecorders(): void {
+  const recordHotkeyInput = document.getElementById('cfg-hotkey') as HTMLInputElement | null
+  if (recordHotkeyInput) attachHotkeyRecorder(recordHotkeyInput)
 }
 
 function collectLlmModelsFromForm(): LlmModelConfig[] {
@@ -425,7 +532,7 @@ export async function loadConfigToForm() {
   try {
     const cfg = await window.electronAPI.getConfig()
     ;urlInput.value = cfg.server?.url || ''
-    ;(document.getElementById('cfg-hotkey') as HTMLInputElement).value = cfg.hotkey?.record || ''
+    ;(document.getElementById('cfg-hotkey') as HTMLInputElement).value = normalizeHotkey(cfg.hotkey?.record || '')
     ;(document.getElementById('cfg-clipboard') as HTMLInputElement).checked = cfg.input?.useClipboard || false
     ;(document.getElementById('cfg-log-debug-enabled') as HTMLInputElement).checked = cfg.logging?.enableDebug || false
     ;(document.getElementById('cfg-vad') as HTMLInputElement).checked = cfg.vad?.enabled || false
@@ -465,7 +572,7 @@ export async function saveConfig() {
     const cfg = await window.electronAPI.getConfig()
     const prevHotkey = normalizeHotkey(cfg.hotkey?.record || '')
     cfg.server.url = (document.getElementById('cfg-url') as HTMLInputElement).value.trim()
-    cfg.hotkey.record = (document.getElementById('cfg-hotkey') as HTMLInputElement).value.trim()
+    cfg.hotkey.record = normalizeHotkey((document.getElementById('cfg-hotkey') as HTMLInputElement).value.trim())
     const nextHotkey = normalizeHotkey(cfg.hotkey.record)
     const needsRestart = prevHotkey !== nextHotkey
     cfg.input.useClipboard = (document.getElementById('cfg-clipboard') as HTMLInputElement).checked
@@ -606,8 +713,9 @@ export function appendCommandRow(container: HTMLElement, name = '', key = '') {
   const keyInput = document.createElement('input')
   keyInput.type = 'text'
   keyInput.className = 'cmd-input cmd-key-input'
-  keyInput.placeholder = '快捷键（如 ALT+R）'
-  keyInput.value = key
+  keyInput.placeholder = '点击后按下快捷键'
+  keyInput.value = normalizeHotkey(key)
+  attachHotkeyRecorder(keyInput)
 
   const delBtn = document.createElement('button')
   delBtn.className = 'cmd-del-btn'
@@ -629,10 +737,12 @@ export async function saveCommands() {
     const newCmds: Record<string, string> = {}
     for (const row of rows) {
       const name = (row.querySelector('.cmd-name-input') as HTMLInputElement).value.trim()
-      const key = (row.querySelector('.cmd-key-input') as HTMLInputElement).value.trim()
+      const key = normalizeHotkey((row.querySelector('.cmd-key-input') as HTMLInputElement).value.trim())
       if (name && key) newCmds[name] = key
     }
     cfg.voiceCommands = newCmds
+    cfg.hotwords = stripVoiceCommandHotwords(cfg.hotwords, newCmds)
+    hotwordScenes = stripVoiceCommandHotwords(hotwordScenes, newCmds)
     await window.electronAPI.saveConfig(cfg)
     hint.textContent = '已保存'
     hint.style.color = '#4ade80'
@@ -656,7 +766,7 @@ export async function loadHotwords() {
 
   try {
     const cfg = await window.electronAPI.getConfig()
-    hotwordScenes = cfg.hotwords ?? [{ name: '全局', words: [] }]
+    hotwordScenes = stripVoiceCommandHotwords(cfg.hotwords, cfg.voiceCommands)
     activeSceneIndex = 0
     hotwordSearchQuery = ''
     const searchInput = document.getElementById('hotword-search') as HTMLInputElement
@@ -773,7 +883,8 @@ export async function saveHotwords() {
   const hint = document.getElementById('hotword-save-hint')!
   try {
     const cfg = await window.electronAPI.getConfig()
-    cfg.hotwords = hotwordScenes
+    cfg.hotwords = stripVoiceCommandHotwords(hotwordScenes, cfg.voiceCommands)
+    hotwordScenes = stripVoiceCommandHotwords(cfg.hotwords, cfg.voiceCommands)
     await window.electronAPI.saveConfig(cfg)
     hint.textContent = '已保存'
     hint.style.color = '#4ade80'

@@ -346,6 +346,11 @@ function collectHotwords(): string[] {
       if (word.trim()) allWords.add(word.trim())
     }
   }
+  const voiceCommands = config.voiceCommands || {}
+  for (const commandWord of Object.keys(voiceCommands)) {
+    const word = commandWord.trim()
+    if (word) allWords.add(word)
+  }
   return Array.from(allWords)
 }
 

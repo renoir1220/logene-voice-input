@@ -22,6 +22,7 @@ import {
   addTextRule,
   updateAsrModeUI,
   setHotwordSearchQuery,
+  initHotkeyRecorders,
 } from '../dashboard-config'
 import {
   appendLogEntry,
@@ -41,6 +42,7 @@ export function initDashboardUI() {
   document.getElementById('main-dashboard-view')!.classList.add('active')
 
   initDashboardElements()
+  initHotkeyRecorders()
 
   const dashboardVadToggle = document.getElementById('dashboard-vad-toggle') as HTMLInputElement | null
 
@@ -193,6 +195,10 @@ export function initDashboardUI() {
       setModelListHint(`本地识别启动中${suffix}：${status.message || '请稍候'}`)
     } else if (status.phase === 'error') {
       setModelListHint(`本地识别启动失败：${status.message}`, true)
+    } else if (status.phase === 'ready') {
+      setModelListHint('')
+    } else if (status.phase === 'idle') {
+      setModelListHint('')
     }
   })
   // 识别记录新增时刷新统计和历史

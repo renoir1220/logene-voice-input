@@ -19,6 +19,9 @@ vi.mock('../../electron/main/config', () => ({
       { name: '全局', words: ['肉眼所见', '鳞状上皮'] },
       { name: '胃镜', words: ['萎缩性胃炎'] },
     ],
+    voiceCommands: {
+      保存报告: 'F2',
+    },
   })),
 }))
 
@@ -74,6 +77,9 @@ const defaultMockConfig = {
     { name: '全局', words: ['肉眼所见', '鳞状上皮'] },
     { name: '胃镜', words: ['萎缩性胃炎'] },
   ],
+  voiceCommands: {
+    保存报告: 'F2',
+  },
   asr: { puncEnabled: true },
 }
 
@@ -124,6 +130,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     expect(req.hotwords).toContain('肉眼所见')
     expect(req.hotwords).toContain('鳞状上皮')
     expect(req.hotwords).toContain('萎缩性胃炎')
+    expect(req.hotwords).toContain('保存报告')
     mockProc._emit('stdout', JSON.stringify({ id: req.id, ok: true }))
 
     await initPromise
@@ -152,6 +159,7 @@ describe('local-asr (sidecar + FunASR)', () => {
     expect(req.hotwords).toContain('肉眼所见')
     expect(req.hotwords).toContain('鳞状上皮')
     expect(req.hotwords).toContain('萎缩性胃炎')
+    expect(req.hotwords).toContain('保存报告')
     // contextual onnx 需空格分隔
     expect(req.hotwords).not.toContain('\n')
     mockProc._emit('stdout', JSON.stringify({ id: req.id, ok: true }))
