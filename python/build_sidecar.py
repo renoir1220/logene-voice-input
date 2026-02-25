@@ -113,7 +113,28 @@ def cleanup_excluded_artifacts(sidecar_dir: Path) -> None:
                 shutil.rmtree(target, ignore_errors=True)
 
 
-def main():
+def ensure_venv() -> Path:
+    """确保项目 venv 存在并安装好依赖，返回 venv Python 路径。"""
+    is_win = platform.system().lower() == "windows"
+    venv_dir = ROOT / "python" / ".venv"
+    python_exe = venv_dir / ("Scripts/python.exe" if is_win else "bin/python3")
+    pip_exe = venv_dir / ("Scripts/pip.exe" if is_win else "bin/pip")
+    req = ROOT / "python" / "requirements.txt"
+
+    if not python_exe.exists():
+        print("创建 venv...")
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+        print("安装依赖（funasr-onnx 跳过版本约束）...")
+        # 先装除 funasr-onnx 以外的所有依赖
+        deps = [l.strip() for l in req.read_text().splitlines() if l.strip() and not l.startswith("funasr")]
+        subprocess.run([str(pip_exe), "install"] + deps + ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"], check=True)
+        # funasr-onnx 单独用 --no-deps 安装，绕过 numpy 版本约束
+        subprocess.run([str(pip_exe), "install", "funasr-onnx", "--no-deps", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"], check=True)
+        print("venv 初始化完成")
+    return python_exe
+
+
+
     plat = get_platform_name()
     out_dir = ROOT / "dist" / "sidecar" / plat
 
@@ -123,9 +144,8 @@ def main():
     # 打包前修补 funasr_onnx 以兼容 numpy 2.x
     patch_funasr_onnx_numpy2()
 
-    # 优先使用项目 venv Python（包含完整依赖），回退到当前 Python
-    venv_python = ROOT / "python" / ".venv" / ("Scripts/python.exe" if platform.system().lower() == "windows" else "bin/python3")
-    python_exe = str(venv_python) if venv_python.exists() else sys.executable
+    # 确保 venv 存在并使用它的 Python 构建
+    python_exe = str(ensure_venv())
     print(f"使用 Python: {python_exe}")
 
     cmd = [

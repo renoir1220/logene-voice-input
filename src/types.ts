@@ -9,6 +9,7 @@ declare global {
       restoreFocus: (appId: string | null) => Promise<void>
       getVadEnabled: () => Promise<boolean>
       setVadEnabled: (enabled: boolean) => Promise<boolean>
+      setVadThreshold: (threshold: number) => Promise<number>
       getAsrRuntimeStatus: () => Promise<AsrRuntimeStatus>
       recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) => Promise<string>
       openDashboard: () => Promise<void>
@@ -43,6 +44,7 @@ declare global {
       restartApp: () => Promise<boolean>
       onHotkeyState: (cb: (state: string) => void) => void
       onToggleVad: (cb: (enabled: boolean) => void) => void
+      onVadThresholdUpdated: (cb: (threshold: number) => void) => void
       onAsrRuntimeStatus: (cb: (status: AsrRuntimeStatus) => void) => void
       onHotkeyStopRecording: (cb: (prevAppId: string | null) => void) => void
       onModelDownloadProgress: (cb: (data: { modelId: string; percent: number; status?: string }) => void) => void

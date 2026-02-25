@@ -1,6 +1,7 @@
 import {
   initDashboardElements,
   setVadEnabled,
+  applyVadThreshold,
   applyAsrRuntimeStatus,
   refreshAsrRuntimeStatus,
   showError,
@@ -42,6 +43,48 @@ export function initDashboardUI() {
   initDashboardElements()
 
   const dashboardVadToggle = document.getElementById('dashboard-vad-toggle') as HTMLInputElement | null
+
+  const vadThresholdSlider = document.getElementById('cfg-vad-threshold') as HTMLInputElement | null
+  const vadThresholdDisplay = document.getElementById('vad-threshold-display')
+  let vadThresholdPersistTimer: ReturnType<typeof setTimeout> | null = null
+  let vadThresholdPersistSeq = 0
+  const persistVadThreshold = (threshold: number) => {
+    const seq = ++vadThresholdPersistSeq
+    void window.electronAPI.setVadThreshold(threshold)
+      .then((savedThreshold) => {
+        if (seq !== vadThresholdPersistSeq) return
+        applyVadThreshold(savedThreshold)
+      })
+      .catch((e) => {
+        if (seq !== vadThresholdPersistSeq) return
+        showError(`保存 VAD 灵敏度失败: ${String(e)}`)
+      })
+  }
+
+  const onVadThresholdInput = () => {
+    if (!vadThresholdSlider) return
+    const threshold = applyVadThreshold(parseFloat(vadThresholdSlider.value))
+    if (vadThresholdDisplay) vadThresholdDisplay.textContent = threshold.toFixed(2)
+    if (vadThresholdPersistTimer) clearTimeout(vadThresholdPersistTimer)
+    vadThresholdPersistTimer = setTimeout(() => {
+      vadThresholdPersistTimer = null
+      persistVadThreshold(threshold)
+    }, 220)
+  }
+
+  const onVadThresholdChange = () => {
+    if (!vadThresholdSlider) return
+    const threshold = applyVadThreshold(parseFloat(vadThresholdSlider.value))
+    if (vadThresholdDisplay) vadThresholdDisplay.textContent = threshold.toFixed(2)
+    if (vadThresholdPersistTimer) {
+      clearTimeout(vadThresholdPersistTimer)
+      vadThresholdPersistTimer = null
+    }
+    persistVadThreshold(threshold)
+  }
+
+  vadThresholdSlider?.addEventListener('input', onVadThresholdInput)
+  vadThresholdSlider?.addEventListener('change', onVadThresholdChange)
 
   document.getElementById('save-btn')!.addEventListener('click', saveConfig)
   document.getElementById('save-text-rules-btn')?.addEventListener('click', saveConfig)
@@ -140,6 +183,9 @@ export function initDashboardUI() {
 
   // 实时日志推送
   window.electronAPI.onLogEntry((entry) => appendLogEntry(entry))
+  window.electronAPI.onVadThresholdUpdated((threshold) => {
+    applyVadThreshold(threshold)
+  })
   window.electronAPI.onAsrRuntimeStatus((status) => {
     applyAsrRuntimeStatus(status)
     if (status.phase === 'starting') {

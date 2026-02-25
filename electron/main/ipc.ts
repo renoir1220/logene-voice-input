@@ -44,6 +44,14 @@ let asrRequestSeq = 0
 let localAsrInitPromise: Promise<void> | null = null
 let localAsrInitModelId: string | null = null
 
+const VAD_THRESHOLD_MIN = 0.01
+const VAD_THRESHOLD_MAX = 0.2
+
+function clampVadThreshold(raw: unknown): number {
+  const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : VAD_THRESHOLD_MIN
+  return Math.min(VAD_THRESHOLD_MAX, Math.max(VAD_THRESHOLD_MIN, value))
+}
+
 export function emitAsrRuntimeStatus() {
   mainWindow?.webContents.send('asr-runtime-status', asrRuntimeStatus)
   dashboardWindow?.webContents.send('asr-runtime-status', asrRuntimeStatus)
@@ -227,6 +235,9 @@ export function setupIpc(
       } : current.llm,
     }
     saveConfig(merged)
+    const syncedVadThreshold = clampVadThreshold(merged.vad?.speechThreshold)
+    mainWindow?.webContents.send('vad-threshold-updated', syncedVadThreshold)
+    dashboardWindow?.webContents.send('vad-threshold-updated', syncedVadThreshold)
     updateTrayMenu()
     if ((merged.asr?.mode ?? 'api') === 'local') {
       void ensureLocalRecognizerReady('config-save').catch(() => { })
@@ -243,6 +254,18 @@ export function setupIpc(
   handle('get-vad-enabled', () => vadEnabled)
   handle('set-vad-enabled', (_event, enabled: boolean) => {
     return setVadEnabledState(Boolean(enabled))
+  })
+  handle('set-vad-threshold', (_event, threshold: number) => {
+    const normalizedThreshold = clampVadThreshold(threshold)
+    const cfg = getConfig()
+    cfg.vad = {
+      ...cfg.vad,
+      speechThreshold: normalizedThreshold,
+    }
+    saveConfig(cfg)
+    mainWindow?.webContents.send('vad-threshold-updated', normalizedThreshold)
+    dashboardWindow?.webContents.send('vad-threshold-updated', normalizedThreshold)
+    return normalizedThreshold
   })
 
   handle('get-asr-runtime-status', () => asrRuntimeStatus)
@@ -351,22 +374,38 @@ export function setupIpc(
     const asrMode = cfg.asr?.mode ?? 'api'
     logger.info(`[ASR#${reqId}] 收到 WAV，大小 ${buf.byteLength} 字节，模式: ${asrMode}`)
 
-    // 音频过短（< 0.5s）时跳过识别，避免模型对静音产生幻觉输出
-    // 16kHz 16-bit mono: 32000 字节/秒，0.5s = 16000 字节 + 44 字节 WAV 头
-    const MIN_WAV_BYTES = 16044
-    if (buf.byteLength < MIN_WAV_BYTES) {
-      logger.info(`[ASR#${reqId}] WAV 过短 (${buf.byteLength} < ${MIN_WAV_BYTES})，跳过识别`)
+    const wavPayloadBytes = Math.max(0, buf.byteLength - 44)
+    const pcmSampleCount = Math.floor(wavPayloadBytes / 2)
+    const audioDurationMs = Math.round((pcmSampleCount / 16000) * 1000)
+    if (pcmSampleCount <= 0) {
+      logger.info(`[ASR#${reqId}] WAV 无有效 PCM 数据，跳过识别`)
+      return ''
+    }
+    if (audioDurationMs < 90) {
+      logger.info(`[ASR#${reqId}] 音频时长过短 (${audioDurationMs}ms < 90ms)，跳过识别`)
       return ''
     }
 
-    // 检测音频能量，静音或极低能量时跳过识别（避免模型幻觉）
-    const pcmData = new Int16Array(buf.buffer, buf.byteOffset + 44, (buf.byteLength - 44) / 2)
+    // 检测音频能量，静音或极低活跃度时跳过识别（避免模型幻觉）
+    const pcmData = new Int16Array(buf.buffer, buf.byteOffset + 44, pcmSampleCount)
     let sumSq = 0
-    for (let i = 0; i < pcmData.length; i++) sumSq += pcmData[i] * pcmData[i]
+    let activeSamples = 0
+    const ACTIVE_SAMPLE_ABS_THRESHOLD = 220
+    for (let i = 0; i < pcmData.length; i++) {
+      const sample = pcmData[i]
+      const abs = Math.abs(sample)
+      if (abs >= ACTIVE_SAMPLE_ABS_THRESHOLD) activeSamples += 1
+      sumSq += sample * sample
+    }
     const rms = Math.sqrt(sumSq / pcmData.length)
-    const SILENCE_RMS_THRESHOLD = 80  // 16-bit PCM，低于此值视为静音
-    if (rms < SILENCE_RMS_THRESHOLD) {
-      logger.info(`[ASR#${reqId}] 音频能量过低 (rms=${rms.toFixed(1)} < ${SILENCE_RMS_THRESHOLD})，跳过识别`)
+    const activeRatio = activeSamples / pcmData.length
+    const SILENCE_RMS_THRESHOLD = 75
+    const MIN_ACTIVE_SAMPLE_RATIO = 0.008
+    if (rms < SILENCE_RMS_THRESHOLD && activeRatio < MIN_ACTIVE_SAMPLE_RATIO) {
+      logger.info(
+        `[ASR#${reqId}] 音频活跃度过低 (durationMs=${audioDurationMs}, rms=${rms.toFixed(1)}, ` +
+        `activeRatio=${activeRatio.toFixed(4)}), 跳过识别`,
+      )
       return ''
     }
 

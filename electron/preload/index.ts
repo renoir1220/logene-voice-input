@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   restoreFocus: (appId: string | null) => ipcRenderer.invoke('restore-focus', appId),
   getVadEnabled: () => ipcRenderer.invoke('get-vad-enabled'),
   setVadEnabled: (enabled: boolean) => ipcRenderer.invoke('set-vad-enabled', enabled),
+  setVadThreshold: (threshold: number) => ipcRenderer.invoke('set-vad-threshold', threshold),
   getAsrRuntimeStatus: () => ipcRenderer.invoke('get-asr-runtime-status'),
   recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) =>
     ipcRenderer.invoke('recognize-wav', wavBuffer, prevAppId),
@@ -56,6 +57,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onToggleVad: (cb: (enabled: boolean) => void) => {
     ipcRenderer.on('toggle-vad', (_e, enabled) => cb(Boolean(enabled)))
+  },
+  onVadThresholdUpdated: (cb: (threshold: number) => void) => {
+    ipcRenderer.on('vad-threshold-updated', (_e, threshold) => cb(Number(threshold)))
   },
   onAsrRuntimeStatus: (cb: (status: {
     phase: 'idle' | 'starting' | 'ready' | 'error'

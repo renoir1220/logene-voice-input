@@ -3,3 +3,10 @@ numpy
 onnxruntime
 modelscope
 jieba
+librosa
+kaldi-native-fbank
+lazy_loader
+scipy
+sentencepiece
+pyyaml
+onnx

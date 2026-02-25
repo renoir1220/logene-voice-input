@@ -17,6 +17,10 @@ const SUCCESS_FLASH_MS = 180
 let startCapturePromise: Promise<void> | null = null
 let focusSnapshotAppId: string | null = null
 
+const VAD_THRESHOLD_MIN = 0.01
+const VAD_THRESHOLD_MAX = 0.2
+const VAD_DEFAULT_THRESHOLD = 0.06
+
 let asrRuntimeStatus: AsrRuntimeStatus = {
   phase: 'idle',
   modelId: null,
@@ -26,7 +30,7 @@ let asrRuntimeStatus: AsrRuntimeStatus = {
 }
 let lastAsrRuntimeError = ''
 
-export let vadState: VadState = { enabled: false, threshold: 0.03, silenceMs: 800, minSpeechMs: 300 }
+export let vadState: VadState = { enabled: false, threshold: VAD_DEFAULT_THRESHOLD, silenceMs: 800, minSpeechMs: 300 }
 let vadSyncVersion = 0
 
 export function getState(): RecordState { return state }
@@ -225,6 +229,21 @@ function applyAudioCaptureFromConfig(cfg: Pick<AppConfig, 'audioCapture'> | null
   setAudioCaptureConfig(cfg.audioCapture)
 }
 
+function clampVadThreshold(raw: number): number {
+  if (!Number.isFinite(raw)) return VAD_DEFAULT_THRESHOLD
+  return Math.min(VAD_THRESHOLD_MAX, Math.max(VAD_THRESHOLD_MIN, raw))
+}
+
+export function applyVadThreshold(threshold: number): number {
+  const next = clampVadThreshold(threshold)
+  vadState.threshold = next
+  const thresholdSlider = document.getElementById('cfg-vad-threshold') as HTMLInputElement | null
+  const thresholdDisplay = document.getElementById('vad-threshold-display')
+  if (thresholdSlider) thresholdSlider.value = String(next)
+  if (thresholdDisplay) thresholdDisplay.textContent = next.toFixed(2)
+  return next
+}
+
 // ── 录音按钮点击 ──
 
 export async function onRecordClick() {
@@ -310,10 +329,11 @@ export async function applyVadEnabled(enabled: boolean, showHint: boolean) {
     applyAudioCaptureFromConfig(cfg)
     vadState = {
       enabled: true,
-      threshold: cfg.vad.speechThreshold,
+      threshold: VAD_DEFAULT_THRESHOLD,
       silenceMs: cfg.vad.silenceTimeoutMs,
       minSpeechMs: cfg.vad.minSpeechDurationMs,
     }
+    applyVadThreshold(cfg.vad.speechThreshold)
     try {
       await startVad(vadState, makeVadCallbacks())
       syncVadUi(true)

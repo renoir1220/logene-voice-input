@@ -193,7 +193,7 @@ const defaultConfig: AppConfig = {
   },
   vad: {
     enabled: false,
-    speechThreshold: 0.03,
+    speechThreshold: 0.06,
     silenceTimeoutMs: 800,
     minSpeechDurationMs: 300,
   },
@@ -255,6 +255,13 @@ const defaultConfig: AppConfig = {
   },
 }
 
+const VAD_SPEECH_THRESHOLD_MIN = 0.01
+const VAD_SPEECH_THRESHOLD_MAX = 0.2
+const VAD_SILENCE_TIMEOUT_MIN_MS = 200
+const VAD_SILENCE_TIMEOUT_MAX_MS = 4000
+const VAD_MIN_SPEECH_DURATION_MIN_MS = 120
+const VAD_MIN_SPEECH_DURATION_MAX_MS = 4000
+
 // electron-store 实例
 const store = new Store<AppConfig>({
   name: 'config',
@@ -266,6 +273,7 @@ export function getConfig(): AppConfig {
   cfg.llm = normalizeLlmConfig(cfg.llm as unknown)
   cfg.textRules = normalizeTextRulesConfig(cfg.textRules as unknown)
   cfg.audioCapture = normalizeAudioCaptureConfig(cfg.audioCapture as unknown)
+  cfg.vad = normalizeVadConfig(cfg.vad as unknown)
   if (!cfg.asr || typeof cfg.asr !== 'object') {
     cfg.asr = { ...defaultConfig.asr }
   }
@@ -291,6 +299,7 @@ export function saveConfig(config: AppConfig): void {
   config.llm = normalizeLlmConfig(config.llm as unknown)
   config.textRules = normalizeTextRulesConfig(config.textRules as unknown)
   config.audioCapture = normalizeAudioCaptureConfig(config.audioCapture as unknown)
+  config.vad = normalizeVadConfig(config.vad as unknown)
   if (!config.asr || typeof config.asr !== 'object') {
     config.asr = { ...defaultConfig.asr }
   }
@@ -345,6 +354,33 @@ function normalizeAudioCaptureConfig(raw: unknown): AudioCaptureConfig {
       defaultConfig.audioCapture.workletFlushTimeoutMs,
       80,
       2000,
+    )),
+  }
+}
+
+function normalizeVadConfig(raw: unknown): AppConfig['vad'] {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    enabled: typeof source.enabled === 'boolean'
+      ? source.enabled
+      : defaultConfig.vad.enabled,
+    speechThreshold: clampNumber(
+      source.speechThreshold,
+      defaultConfig.vad.speechThreshold,
+      VAD_SPEECH_THRESHOLD_MIN,
+      VAD_SPEECH_THRESHOLD_MAX,
+    ),
+    silenceTimeoutMs: Math.round(clampNumber(
+      source.silenceTimeoutMs,
+      defaultConfig.vad.silenceTimeoutMs,
+      VAD_SILENCE_TIMEOUT_MIN_MS,
+      VAD_SILENCE_TIMEOUT_MAX_MS,
+    )),
+    minSpeechDurationMs: Math.round(clampNumber(
+      source.minSpeechDurationMs,
+      defaultConfig.vad.minSpeechDurationMs,
+      VAD_MIN_SPEECH_DURATION_MIN_MS,
+      VAD_MIN_SPEECH_DURATION_MAX_MS,
     )),
   }
 }

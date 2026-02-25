@@ -101,11 +101,16 @@
             </div>
             <div class="card">
               <h3>VAD 连续识别模式</h3>
-              <p class="desc">在安静环境下持续聆听，说完即转换为输入。</p>
+              <p class="desc">持续聆听，说完即转换为输入。嘈杂环境或麦克风有底噪时请降低灵敏度。</p>
               <label class="toggle-switch">
                 <input type="checkbox" id="dashboard-vad-toggle">
                 <span class="slider"></span>
               </label>
+              <div class="form-group" style="margin-top:12px">
+                <label style="font-size:12px;color:var(--text-secondary)">触发灵敏度：<span id="vad-threshold-display">0.06</span></label>
+                <input type="range" id="cfg-vad-threshold" min="0.01" max="0.20" step="0.01" value="0.06" style="width:100%;margin-top:4px">
+                <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);margin-top:2px"><span>高（易触发）</span><span>低（抗噪）</span></div>
+              </div>
             </div>
             <div class="card">
               <h3>最近识别记录</h3>

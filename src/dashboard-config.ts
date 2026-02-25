@@ -430,6 +430,11 @@ export async function loadConfigToForm() {
     ;(document.getElementById('cfg-log-debug-enabled') as HTMLInputElement).checked = cfg.logging?.enableDebug || false
     ;(document.getElementById('cfg-vad') as HTMLInputElement).checked = cfg.vad?.enabled || false
     ;(document.getElementById('dashboard-vad-toggle') as HTMLInputElement).checked = cfg.vad?.enabled || false
+    const threshold = cfg.vad?.speechThreshold ?? 0.06
+    const thresholdSlider = document.getElementById('cfg-vad-threshold') as HTMLInputElement | null
+    const thresholdDisplay = document.getElementById('vad-threshold-display')
+    if (thresholdSlider) thresholdSlider.value = String(threshold)
+    if (thresholdDisplay) thresholdDisplay.textContent = threshold.toFixed(2)
     ;(document.getElementById('cfg-llm-enabled') as HTMLInputElement).checked = cfg.llm?.enabled || false
     ;(document.getElementById('cfg-llm-asr-optimize') as HTMLInputElement).checked =
       typeof cfg.llm?.asrPostProcessEnabled === 'boolean'
@@ -501,6 +506,11 @@ export async function saveConfig() {
           deviceId: deviceSelect.value || undefined,
         },
       }
+    }
+    const thresholdSlider = document.getElementById('cfg-vad-threshold') as HTMLInputElement | null
+    cfg.vad = {
+      ...cfg.vad,
+      speechThreshold: thresholdSlider ? parseFloat(thresholdSlider.value) : (cfg.vad?.speechThreshold ?? 0.06),
     }
     await window.electronAPI.saveConfig(cfg)
     hint.textContent = needsRestart ? '已保存，热键变更需重启后生效' : '已保存'

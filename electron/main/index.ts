@@ -47,7 +47,7 @@ function setVadEnabledState(enabled: boolean, emitToRenderer = false): boolean {
   const cfg = getConfig()
   cfg.vad = {
     enabled,
-    speechThreshold: cfg.vad?.speechThreshold ?? 0.03,
+    speechThreshold: cfg.vad?.speechThreshold ?? 0.06,
     silenceTimeoutMs: cfg.vad?.silenceTimeoutMs ?? 800,
     minSpeechDurationMs: cfg.vad?.minSpeechDurationMs ?? 300,
   }
