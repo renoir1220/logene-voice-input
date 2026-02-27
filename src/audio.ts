@@ -23,8 +23,8 @@ const VAD_NOISE_FLOOR_EMA_ALPHA = 0.08
 const VAD_NOISE_FLOOR_START_RATIO = 1.6
 const VAD_NOISE_FLOOR_STOP_RATIO = 1.18
 const VAD_START_TRIGGER_MS = 60
-const VAD_RELEASE_TRIGGER_MS = 120
-const VAD_ENDPOINT_HANGOVER_MS = 120
+const VAD_RELEASE_TRIGGER_MS = 80
+const VAD_ENDPOINT_HANGOVER_MS = 60
 const VAD_MAX_SPEECH_MS = 12000
 const VAD_PRE_ROLL_MS = 260
 const VAD_HARD_MIN_WAV_MS = 90
@@ -36,7 +36,7 @@ const DEFAULT_AUDIO_CAPTURE_CONFIG: AudioCaptureConfig = {
     noiseSuppression: false,
     autoGainControl: false,
   },
-  postRollMs: 200,
+  postRollMs: 100,
   tailSilenceMs: 120,
   workletFlushTimeoutMs: 220,
 }

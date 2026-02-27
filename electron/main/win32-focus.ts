@@ -10,14 +10,31 @@ type KoffiFunc = (...args: unknown[]) => unknown
 
 let _GetForegroundWindow: KoffiFunc | null = null
 let _SetForegroundWindow: KoffiFunc | null = null
-let _keybd_event: KoffiFunc | null = null
+let _SendInput: KoffiFunc | null = null
+let _inputSize = 0
+
+// SendInput 所需的 INPUT 结构体（仅键盘部分）
+// 尾部 _pad 补齐到与 MOUSEINPUT（union 中最大成员）等宽，保证 sizeof 与系统一致
+const KEYBDINPUT = koffi.struct('KEYBDINPUT', {
+  wVk: 'uint16',
+  wScan: 'uint16',
+  dwFlags: 'uint32',
+  time: 'uint32',
+  dwExtraInfo: 'uintptr_t',
+})
+const INPUT_KB = koffi.struct('INPUT_KB', {
+  type: 'uint32',
+  ki: KEYBDINPUT,
+  _pad: koffi.array('uint8', 8),
+})
 
 function loadUser32(): void {
   if (_GetForegroundWindow) return
   const user32 = koffi.load('user32.dll')
   _GetForegroundWindow = user32.func('intptr_t __stdcall GetForegroundWindow()')
   _SetForegroundWindow = user32.func('bool __stdcall SetForegroundWindow(intptr_t hWnd)')
-  _keybd_event = user32.func('void __stdcall keybd_event(uint8 bVk, uint8 bScan, uint32 dwFlags, uintptr_t dwExtraInfo)')
+  _SendInput = user32.func('uint32 __stdcall SendInput(uint32 cInputs, INPUT_KB *pInputs, int cbSize)')
+  _inputSize = koffi.sizeof(INPUT_KB)
 }
 
 // 仅在 Windows 上预加载，macOS/Linux 不执行
@@ -45,18 +62,27 @@ export function setWin32ForegroundWindow(hwnd: string): boolean {
   }
 }
 
+const INPUT_KEYBOARD = 1
 const KEYEVENTF_KEYUP = 0x0002
 const VK_CONTROL = 0x11
 const VK_SHIFT = 0x10
 const VK_MENU = 0x12  // Alt
 const VK_V = 0x56
 
-/** 模拟 Ctrl+V 粘贴 */
+/** 构造一个键盘 INPUT 结构体 */
+function makeKeyInput(vk: number, flags: number) {
+  return { type: INPUT_KEYBOARD, ki: { wVk: vk, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 }, _pad: new Array(8).fill(0) }
+}
+
+/** 模拟 Ctrl+V 粘贴（SendInput 版本，对 Chromium 内核应用兼容性更好） */
 export function win32PasteClipboard(): void {
-  _keybd_event!(VK_CONTROL, 0, 0, 0)
-  _keybd_event!(VK_V, 0, 0, 0)
-  _keybd_event!(VK_V, 0, KEYEVENTF_KEYUP, 0)
-  _keybd_event!(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+  const inputs = [
+    makeKeyInput(VK_CONTROL, 0),
+    makeKeyInput(VK_V, 0),
+    makeKeyInput(VK_V, KEYEVENTF_KEYUP),
+    makeKeyInput(VK_CONTROL, KEYEVENTF_KEYUP),
+  ]
+  _SendInput!(inputs.length, inputs, _inputSize)
 }
 
 /** 虚拟键码映射 */
@@ -85,9 +111,14 @@ export function win32SendShortcut(shortcut: string): void {
     }
   }
 
-  for (const vk of modifiers) _keybd_event!(vk, 0, 0, 0)
-  for (const vk of keys) _keybd_event!(vk, 0, 0, 0)
-  for (const vk of [...keys].reverse()) _keybd_event!(vk, 0, KEYEVENTF_KEYUP, 0)
-  for (const vk of [...modifiers].reverse()) _keybd_event!(vk, 0, KEYEVENTF_KEYUP, 0)
+  const inputs = [
+    ...modifiers.map(vk => makeKeyInput(vk, 0)),
+    ...keys.map(vk => makeKeyInput(vk, 0)),
+    ...[...keys].reverse().map(vk => makeKeyInput(vk, KEYEVENTF_KEYUP)),
+    ...[...modifiers].reverse().map(vk => makeKeyInput(vk, KEYEVENTF_KEYUP)),
+  ]
+  if (inputs.length > 0) {
+    _SendInput!(inputs.length, inputs, _inputSize)
+  }
 }
 

@@ -30,7 +30,7 @@ let asrRuntimeStatus: AsrRuntimeStatus = {
 }
 let lastAsrRuntimeError = ''
 
-export let vadState: VadState = { enabled: false, threshold: VAD_DEFAULT_THRESHOLD, silenceMs: 800, minSpeechMs: 300 }
+export let vadState: VadState = { enabled: false, threshold: VAD_DEFAULT_THRESHOLD, silenceMs: 500, minSpeechMs: 300 }
 let vadSyncVersion = 0
 
 export function getState(): RecordState { return state }
