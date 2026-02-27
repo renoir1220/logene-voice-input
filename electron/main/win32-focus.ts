@@ -11,6 +11,9 @@ type KoffiFunc = (...args: unknown[]) => unknown
 let _GetForegroundWindow: KoffiFunc | null = null
 let _SetForegroundWindow: KoffiFunc | null = null
 let _SendInput: KoffiFunc | null = null
+let _GetWindowThreadProcessId: KoffiFunc | null = null
+let _GetCurrentThreadId: KoffiFunc | null = null
+let _AttachThreadInput: KoffiFunc | null = null
 let _inputSize = 0
 
 // SendInput 所需的 INPUT 结构体（仅键盘部分）
@@ -31,9 +34,13 @@ const INPUT_KB = koffi.struct('INPUT_KB', {
 function loadUser32(): void {
   if (_GetForegroundWindow) return
   const user32 = koffi.load('user32.dll')
+  const kernel32 = koffi.load('kernel32.dll')
   _GetForegroundWindow = user32.func('intptr_t __stdcall GetForegroundWindow()')
   _SetForegroundWindow = user32.func('bool __stdcall SetForegroundWindow(intptr_t hWnd)')
   _SendInput = user32.func('uint32 __stdcall SendInput(uint32 cInputs, INPUT_KB *pInputs, int cbSize)')
+  _GetWindowThreadProcessId = user32.func('uint32 __stdcall GetWindowThreadProcessId(intptr_t hWnd, uint32 *lpdwProcessId)')
+  _AttachThreadInput = user32.func('bool __stdcall AttachThreadInput(uint32 idAttach, uint32 idAttachTo, bool fAttach)')
+  _GetCurrentThreadId = kernel32.func('uint32 __stdcall GetCurrentThreadId()')
   _inputSize = koffi.sizeof(INPUT_KB)
 }
 
@@ -74,7 +81,29 @@ function makeKeyInput(vk: number, flags: number) {
   return { type: INPUT_KEYBOARD, ki: { wVk: vk, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 }, _pad: new Array(8).fill(0) }
 }
 
-/** 模拟 Ctrl+V 粘贴（SendInput 版本，对 Chromium 内核应用兼容性更好） */
+/**
+ * 将当前线程 attach 到前台窗口的输入线程，执行回调后 detach。
+ * 解决 SetForegroundWindow 后焦点尚未就绪导致 SendInput 被拒绝的竞态问题。
+ */
+function withAttachedInput(fn: () => void): void {
+  const hwnd = _GetForegroundWindow!() as bigint | number
+  if (!hwnd) { fn(); return }
+
+  const pidOut = [0]
+  const targetThread = _GetWindowThreadProcessId!(hwnd, pidOut) as number
+  const currentThread = _GetCurrentThreadId!() as number
+
+  if (!targetThread || targetThread === currentThread) { fn(); return }
+
+  const attached = _AttachThreadInput!(currentThread, targetThread, true) as boolean
+  try {
+    fn()
+  } finally {
+    if (attached) _AttachThreadInput!(currentThread, targetThread, false)
+  }
+}
+
+/** 模拟 Ctrl+V 粘贴（AttachThreadInput + SendInput，确保按键送达 Chromium 等多进程应用） */
 export function win32PasteClipboard(): void {
   const inputs = [
     makeKeyInput(VK_CONTROL, 0),
@@ -82,7 +111,9 @@ export function win32PasteClipboard(): void {
     makeKeyInput(VK_V, KEYEVENTF_KEYUP),
     makeKeyInput(VK_CONTROL, KEYEVENTF_KEYUP),
   ]
-  _SendInput!(inputs.length, inputs, _inputSize)
+  withAttachedInput(() => {
+    _SendInput!(inputs.length, inputs, _inputSize)
+  })
 }
 
 /** 虚拟键码映射 */
@@ -118,7 +149,9 @@ export function win32SendShortcut(shortcut: string): void {
     ...[...modifiers].reverse().map(vk => makeKeyInput(vk, KEYEVENTF_KEYUP)),
   ]
   if (inputs.length > 0) {
-    _SendInput!(inputs.length, inputs, _inputSize)
+    withAttachedInput(() => {
+      _SendInput!(inputs.length, inputs, _inputSize)
+    })
   }
 }
 

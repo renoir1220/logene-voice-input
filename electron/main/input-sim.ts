@@ -8,8 +8,8 @@ const execAsync = promisify(exec)
 // 将文字输入到目标窗口（剪贴板粘贴方式）
 export async function typeText(text: string): Promise<void> {
   clipboard.writeText(text)
-  // Windows 上 Chromium 内核应用需要更长延迟等待 input pipeline 就绪
-  await sleep(process.platform === 'win32' ? 150 : 50)
+  // 短暂延迟确保剪贴板就绪
+  await sleep(50)
   await pasteClipboard()
 }
 
