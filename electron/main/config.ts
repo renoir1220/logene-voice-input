@@ -175,10 +175,13 @@ export interface AppConfig {
   logging: LoggingConfig
 }
 
+const FALLBACK_RECORD_HOTKEY = 'Alt+E'
+const WIN_FORBIDDEN_RECORD_HOTKEY = 'ALT+SPACE'
+
 // 默认配置
 const defaultConfig: AppConfig = {
   server: { url: 'http://localhost:3000', asrConfigId: '' },
-  hotkey: { record: 'Alt+Space' },
+  hotkey: { record: FALLBACK_RECORD_HOTKEY },
   input: { useClipboard: false },
   audioCapture: {
     inputConstraints: {
@@ -286,6 +289,10 @@ export function getConfig(): AppConfig {
   if (typeof cfg.logging.enableDebug !== 'boolean') {
     cfg.logging.enableDebug = false
   }
+  if (!cfg.hotkey || typeof cfg.hotkey !== 'object') {
+    cfg.hotkey = { ...defaultConfig.hotkey }
+  }
+  cfg.hotkey.record = normalizeRecordHotkey((cfg.hotkey as { record?: unknown }).record)
   cfg.onboarding = normalizeOnboardingConfig(cfg.onboarding)
   // 迁移旧模型 ID：本地识别仅保留 ONNX 量化热词模型。
   if (cfg.asr?.localModel !== 'paraformer-zh-contextual-quant') {
@@ -312,8 +319,27 @@ export function saveConfig(config: AppConfig): void {
   if (typeof config.logging.enableDebug !== 'boolean') {
     config.logging.enableDebug = false
   }
+  if (!config.hotkey || typeof config.hotkey !== 'object') {
+    config.hotkey = { ...defaultConfig.hotkey }
+  }
+  config.hotkey.record = normalizeRecordHotkey((config.hotkey as { record?: unknown }).record)
   config.onboarding = normalizeOnboardingConfig(config.onboarding)
   store.store = config
+}
+
+function normalizeRecordHotkey(raw: unknown): string {
+  const source = typeof raw === 'string' ? raw.trim() : ''
+  const normalized = source || defaultConfig.hotkey.record
+  if (process.platform !== 'win32') return normalized
+  const upper = normalized
+    .split('+')
+    .map((part) => part.trim().toUpperCase())
+    .filter(Boolean)
+    .join('+')
+  if (upper === WIN_FORBIDDEN_RECORD_HOTKEY) {
+    return FALLBACK_RECORD_HOTKEY
+  }
+  return normalized
 }
 
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {

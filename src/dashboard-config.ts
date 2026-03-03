@@ -43,6 +43,12 @@ function normalizeHotkey(raw: string): string {
   return main ? [...modifiers, main].join('+') : modifiers.join('+')
 }
 
+function isForbiddenRecordHotkey(hotkey: string): boolean {
+  const isWin = /^win/i.test(navigator.platform || '')
+  if (!isWin) return false
+  return normalizeHotkey(hotkey) === 'ALT+SPACE'
+}
+
 const HOTKEY_MODIFIER_ORDER = ['CTRL', 'ALT', 'SHIFT', 'META']
 const HOTKEY_MODIFIER_SET = new Set(['CTRL', 'ALT', 'SHIFT', 'META'])
 
@@ -574,6 +580,9 @@ export async function saveConfig() {
     cfg.server.url = (document.getElementById('cfg-url') as HTMLInputElement).value.trim()
     cfg.hotkey.record = normalizeHotkey((document.getElementById('cfg-hotkey') as HTMLInputElement).value.trim())
     const nextHotkey = normalizeHotkey(cfg.hotkey.record)
+    if (isForbiddenRecordHotkey(nextHotkey)) {
+      throw new Error('Windows 下 Alt+Space 会触发系统菜单，导致光标丢失。请改用 Alt+E 等组合键。')
+    }
     const needsRestart = prevHotkey !== nextHotkey
     cfg.input.useClipboard = (document.getElementById('cfg-clipboard') as HTMLInputElement).checked
     cfg.logging = {

@@ -3,6 +3,7 @@ declare global {
   interface Window {
     electronAPI: {
       getConfig: () => Promise<AppConfig>
+      getAppVersion: () => Promise<string>
       saveConfig: (config: AppConfig) => Promise<void>
       getFrontmostApp: () => Promise<string | null>
       captureFocusSnapshot: (reason?: string) => Promise<string | null>
@@ -13,6 +14,7 @@ declare global {
       getAsrRuntimeStatus: () => Promise<AsrRuntimeStatus>
       recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) => Promise<string>
       openDashboard: () => Promise<void>
+      closeDashboard: () => Promise<void>
       showFloatContextMenu: () => Promise<void>
       getWindowPosition: () => Promise<[number, number]>
       setWindowPosition: (x: number, y: number) => Promise<void>

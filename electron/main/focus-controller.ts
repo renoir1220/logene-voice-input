@@ -133,8 +133,9 @@ export class FocusController {
 
   async captureSnapshot(reason: string, logResult = true): Promise<string | null> {
     // tracker 已在后台持续更新 lastExternalAppId 缓存。
-    // 非 tracker 自身调用时直接返回缓存值，避免 Windows 上每次启动 PowerShell 进程的延迟。
-    if (reason !== 'tracker' && this.tracker !== null) {
+    // 非 tracker 自身调用时优先返回缓存值，减少非 Windows 平台上的外部命令调用。
+    // Windows 走 win32 API 取前台句柄，开销很低，必须实时读取避免快照陈旧。
+    if (reason !== 'tracker' && this.tracker !== null && process.platform !== 'win32') {
       const chosen = this.lastExternalAppId
       if (logResult && this.debugTrace) {
         logger.debug(
@@ -176,7 +177,8 @@ export class FocusController {
       if (this.debugTrace) {
         logger.debug(`[Focus] restore attempt=${i + 1} reason=${reason} target=${target} current=${current ?? 'null'}`)
       }
-      if (current === target || (current && !this.options.isSelfAppId(current))) {
+      // 必须命中目标窗口才算成功；否则会把后续粘贴落到错误窗口。
+      if (current === target) {
         if (this.debugTrace) logger.debug(`[Focus] restore success attempt=${i + 1} reason=${reason} target=${target}`)
         return
       }

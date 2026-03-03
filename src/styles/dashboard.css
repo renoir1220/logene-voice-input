@@ -114,26 +114,26 @@ html[data-platform="win32"] .sidebar {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  padding: 0 32px 24px 32px;
-  overflow-y: auto;
+  padding: 0 28px 18px 28px;
+  overflow: hidden;
   background: #ffffff;
   display: flex;
   flex-direction: column;
 }
 
 .content-header {
-  height: 26px;
+  height: 34px;
   flex-shrink: 0;
   -webkit-app-region: drag;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  margin-bottom: 0;
+  justify-content: flex-end;
+  margin-bottom: 8px;
   position: sticky;
   top: 0;
-  background: transparent;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 72%, rgba(255, 255, 255, 0));
   z-index: 10;
-  padding-bottom: 0;
+  padding: 6px 0 0;
 }
 
 .close-dashboard-btn {
@@ -156,16 +156,47 @@ html[data-platform="win32"] .sidebar {
   color: #0f172a;
 }
 
+.window-close-btn {
+  -webkit-app-region: no-drag;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: #f8fafc;
+  color: #64748b;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  box-shadow: inset 0 0 0 1px #e2e8f0;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.window-close-btn:hover {
+  background: #eef2f7;
+  color: #0f172a;
+  box-shadow: inset 0 0 0 1px #cbd5e1;
+}
+
+html:not([data-platform="win32"]) #close-dashboard-btn {
+  display: none;
+}
+
 .tab-pane {
   display: none;
   animation: fadeIn 0.3s ease;
 }
 
 .tab-pane.active {
-  display: block;
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 /* ── 二级 Tab ── */
@@ -236,13 +267,13 @@ html[data-platform="win32"] .sidebar {
   font-size: 24px;
   font-weight: 600;
   color: #0f172a;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .desc {
   font-size: 13px;
   color: #64748b;
-  margin-bottom: 24px;
+  margin-bottom: 18px;
   line-height: 1.5;
 }
 
@@ -250,7 +281,7 @@ html[data-platform="win32"] .sidebar {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 16px;
-  margin-bottom: 24px;
+  margin-bottom: 18px;
 }
 
 .stat-card {
@@ -277,7 +308,7 @@ html[data-platform="win32"] .sidebar {
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   padding: 20px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
@@ -439,6 +470,30 @@ input:checked+.slider:before {
   font-size: 12px;
   color: #10b981;
   min-height: 18px;
+}
+
+.app-info-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  margin-top: 10px;
+}
+
+.app-info-label {
+  font-size: 13px;
+  color: #475569;
+}
+
+.app-info-value {
+  font-size: 13px;
+  color: #0f172a;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 /* Commands list in Dashboard */
@@ -645,7 +700,7 @@ input:checked+.slider:before {
 
 @media (min-width: 1200px) {
   .content {
-    padding: 0 48px 32px 48px;
+    padding: 0 40px 24px 40px;
   }
 }
 
@@ -1510,4 +1565,58 @@ input:checked+.slider:before {
   outline: 2px solid rgba(14, 165, 233, 0.65);
   outline-offset: 2px;
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.75);
+}
+
+/* ── 主界面滚动条（统一优雅风格） ── */
+#main-dashboard-view .tab-pane.active,
+#main-dashboard-view .log-container,
+#main-dashboard-view .history-list,
+#main-dashboard-view .full-history-list,
+#main-dashboard-view .summary-drawer-body {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.72) transparent;
+}
+
+#main-dashboard-view .tab-pane.active::-webkit-scrollbar,
+#main-dashboard-view .log-container::-webkit-scrollbar,
+#main-dashboard-view .history-list::-webkit-scrollbar,
+#main-dashboard-view .full-history-list::-webkit-scrollbar,
+#main-dashboard-view .summary-drawer-body::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+#main-dashboard-view .tab-pane.active::-webkit-scrollbar-track,
+#main-dashboard-view .log-container::-webkit-scrollbar-track,
+#main-dashboard-view .history-list::-webkit-scrollbar-track,
+#main-dashboard-view .full-history-list::-webkit-scrollbar-track,
+#main-dashboard-view .summary-drawer-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#main-dashboard-view .tab-pane.active::-webkit-scrollbar-thumb,
+#main-dashboard-view .log-container::-webkit-scrollbar-thumb,
+#main-dashboard-view .history-list::-webkit-scrollbar-thumb,
+#main-dashboard-view .full-history-list::-webkit-scrollbar-thumb,
+#main-dashboard-view .summary-drawer-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(148, 163, 184, 0.7);
+}
+
+#main-dashboard-view .tab-pane.active:hover::-webkit-scrollbar-thumb,
+#main-dashboard-view .log-container:hover::-webkit-scrollbar-thumb,
+#main-dashboard-view .history-list:hover::-webkit-scrollbar-thumb,
+#main-dashboard-view .full-history-list:hover::-webkit-scrollbar-thumb,
+#main-dashboard-view .summary-drawer-body:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 116, 139, 0.8);
+}
+
+#main-dashboard-view .tab-pane.active::-webkit-scrollbar-corner,
+#main-dashboard-view .log-container::-webkit-scrollbar-corner,
+#main-dashboard-view .history-list::-webkit-scrollbar-corner,
+#main-dashboard-view .full-history-list::-webkit-scrollbar-corner,
+#main-dashboard-view .summary-drawer-body::-webkit-scrollbar-corner {
+  background: transparent;
 }

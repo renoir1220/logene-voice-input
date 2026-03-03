@@ -169,6 +169,7 @@ export function setupIpc(
   }
 
   handle('get-config', () => getConfig())
+  handle('get-app-version', () => app.getVersion())
   handle('get-frontmost-app', async () => {
     return focusController.captureSnapshot('ipc-get-frontmost')
   })
@@ -298,19 +299,19 @@ export function setupIpc(
       return
     }
 
+    const isMac = process.platform === 'darwin'
+    const isWin = process.platform === 'win32'
     const win = new BrowserWindow({
-      width: 800,
-      height: 600,
-      minWidth: 640,
-      minHeight: 480,
+      width: 1120,
+      height: 720,
+      minWidth: 940,
+      minHeight: 620,
       title: '朗珈语音输入法 - 控制台',
       icon: app.isPackaged
         ? path.join(process.resourcesPath, 'icon.png')
         : path.join(__dirname, '../../build/icons/icon.png'),
-      titleBarStyle: 'hidden',
-      ...(process.platform === 'darwin'
-        ? { trafficLightPosition: { x: 14, y: 14 } }
-        : { titleBarOverlay: { color: '#f1f5f9', symbolColor: '#64748b', height: 36 } }),
+      frame: !isWin,
+      ...(isMac ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 14 } } : {}),
       webPreferences: {
         preload: path.join(__dirname, '../preload/index.js'),
         contextIsolation: true,
@@ -359,6 +360,9 @@ export function setupIpc(
   })
 
   handle('open-dashboard', () => openDashboardWindow())
+  handle('close-dashboard', () => {
+    dashboardWindow?.close()
+  })
 
   handle('restart-app', () => {
     logger.info('[App] 收到重启请求')

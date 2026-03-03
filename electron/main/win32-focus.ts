@@ -85,19 +85,19 @@ function makeKeyInput(vk: number, flags: number) {
  * 将当前线程 attach 到前台窗口的输入线程，执行回调后 detach。
  * 解决 SetForegroundWindow 后焦点尚未就绪导致 SendInput 被拒绝的竞态问题。
  */
-function withAttachedInput(fn: () => void): void {
+function withAttachedInput<T>(fn: () => T): T {
   const hwnd = _GetForegroundWindow!() as bigint | number
-  if (!hwnd) { fn(); return }
+  if (!hwnd) return fn()
 
   const pidOut = [0]
   const targetThread = _GetWindowThreadProcessId!(hwnd, pidOut) as number
   const currentThread = _GetCurrentThreadId!() as number
 
-  if (!targetThread || targetThread === currentThread) { fn(); return }
+  if (!targetThread || targetThread === currentThread) return fn()
 
   const attached = _AttachThreadInput!(currentThread, targetThread, true) as boolean
   try {
-    fn()
+    return fn()
   } finally {
     if (attached) _AttachThreadInput!(currentThread, targetThread, false)
   }
@@ -111,9 +111,10 @@ export function win32PasteClipboard(): void {
     makeKeyInput(VK_V, KEYEVENTF_KEYUP),
     makeKeyInput(VK_CONTROL, KEYEVENTF_KEYUP),
   ]
-  withAttachedInput(() => {
-    _SendInput!(inputs.length, inputs, _inputSize)
-  })
+  const sent = withAttachedInput(() => Number(_SendInput!(inputs.length, inputs, _inputSize)))
+  if (sent !== inputs.length) {
+    throw new Error(`SendInput 粘贴失败: sent=${sent}, expected=${inputs.length}`)
+  }
 }
 
 /** 虚拟键码映射 */
@@ -149,9 +150,10 @@ export function win32SendShortcut(shortcut: string): void {
     ...[...modifiers].reverse().map(vk => makeKeyInput(vk, KEYEVENTF_KEYUP)),
   ]
   if (inputs.length > 0) {
-    withAttachedInput(() => {
-      _SendInput!(inputs.length, inputs, _inputSize)
-    })
+    const sent = withAttachedInput(() => Number(_SendInput!(inputs.length, inputs, _inputSize)))
+    if (sent !== inputs.length) {
+      throw new Error(`SendInput 快捷键失败: sent=${sent}, expected=${inputs.length}`)
+    }
   }
 }
 

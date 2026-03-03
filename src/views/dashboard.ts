@@ -91,6 +91,9 @@ export function initDashboardUI() {
   document.getElementById('save-btn')!.addEventListener('click', saveConfig)
   document.getElementById('save-text-rules-btn')?.addEventListener('click', saveConfig)
   document.getElementById('llm-save-btn')?.addEventListener('click', saveConfig)
+  document.getElementById('close-dashboard-btn')?.addEventListener('click', () => {
+    void window.electronAPI.closeDashboard()
+  })
   document.getElementById('llm-add-model-btn')?.addEventListener('click', addLlmModel)
   document.getElementById('add-text-rule-btn')?.addEventListener('click', addTextRule)
 
@@ -209,6 +212,7 @@ export function initDashboardUI() {
   void refreshAsrRuntimeStatus()
 
   initTabs()
+  void loadAppInfo()
   loadConfigToForm()
   // void initFirstUseOnboarding()  // 暂时关闭引导
   renderCommandEditor()
@@ -216,6 +220,17 @@ export function initDashboardUI() {
   loadLogs()
   loadStats()
   initHistoryTab()
+}
+
+async function loadAppInfo() {
+  const versionEl = document.getElementById('app-version-value')
+  if (!versionEl) return
+  try {
+    const version = await window.electronAPI.getAppVersion()
+    versionEl.textContent = version || '--'
+  } catch {
+    versionEl.textContent = '--'
+  }
 }
 
 /** 加载统计数据和历史记录 */

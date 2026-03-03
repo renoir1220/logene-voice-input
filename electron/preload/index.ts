@@ -4,6 +4,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('electronAPI', {
   // 渲染进程 → 主进程（invoke，有返回值）
   getConfig: () => ipcRenderer.invoke('get-config'),
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   saveConfig: (config: unknown) => ipcRenderer.invoke('save-config', config),
   getFrontmostApp: () => ipcRenderer.invoke('get-frontmost-app'),
   captureFocusSnapshot: (reason?: string) => ipcRenderer.invoke('capture-focus-snapshot', reason),
@@ -46,6 +47,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 重写专用通道
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),
+  closeDashboard: () => ipcRenderer.invoke('close-dashboard'),
   showFloatContextMenu: () => ipcRenderer.invoke('show-float-context-menu'),
   closeRewrite: () => ipcRenderer.invoke('close-rewrite'),
   executeRewrite: (text: string, instruction: string) => ipcRenderer.invoke('execute-rewrite', text, instruction),

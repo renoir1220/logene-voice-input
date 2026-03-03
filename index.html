@@ -14,7 +14,7 @@
     <!-- 视图 1：Typeless 式横向胶囊悬浮窗 -->
     <div id="float-capsule-view" class="view active">
       <div class="capsule-container">
-        <button id="record-btn" class="capsule-btn" title="点击录音 / Alt+Space 按住 / 双击或右键打开配置">
+        <button id="record-btn" class="capsule-btn" title="点击录音 / Alt+E 按住 / 双击或右键打开配置">
           <div class="idle-dots">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
           </div>
@@ -77,6 +77,7 @@
         <!-- 内容主区 -->
         <div class="content">
           <div class="content-header">
+            <button id="close-dashboard-btn" class="window-close-btn" title="关闭控制台" aria-label="关闭控制台">&times;</button>
           </div>
           <!-- 状态页 -->
           <div id="tab-status" class="tab-pane active">
@@ -128,6 +129,7 @@
               <button class="sub-tab" data-subtab="settings-commands">语音指令</button>
               <button class="sub-tab" data-subtab="settings-hotwords">热词管理</button>
               <button class="sub-tab" data-subtab="settings-text-rules">文本规则</button>
+              <button class="sub-tab" data-subtab="settings-about">程序信息</button>
             </div>
 
             <!-- 子页：基本设置 -->
@@ -135,7 +137,7 @@
               <div class="card">
                 <div class="form-group">
                   <label>组合热键 (推入录音)</label>
-                  <input id="cfg-hotkey" type="text" class="input" placeholder="点击后按下快捷键（如 Alt+Space）" />
+                  <input id="cfg-hotkey" type="text" class="input" placeholder="点击后按下快捷键（如 Alt+E）" />
                   <span class="tip">点击输入框后按下按键录制，支持组合键，Backspace/Delete 可清空。</span>
                 </div>
                 <div class="form-group">
@@ -225,6 +227,17 @@
               <div class="actions-row">
                 <div id="text-rules-save-hint" class="save-hint"></div>
                 <button id="save-text-rules-btn" class="btn btn-primary">保存文本规则</button>
+              </div>
+            </div>
+
+            <!-- 子页：程序信息 -->
+            <div id="subtab-settings-about" class="sub-tab-pane">
+              <div class="card">
+                <h3>程序信息</h3>
+                <div class="app-info-item">
+                  <span class="app-info-label">版本号</span>
+                  <span id="app-version-value" class="app-info-value">--</span>
+                </div>
               </div>
             </div>
           </div>
