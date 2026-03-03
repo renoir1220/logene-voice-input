@@ -14,7 +14,7 @@
     <!-- 视图 1：Typeless 式横向胶囊悬浮窗 -->
     <div id="float-capsule-view" class="view active">
       <div class="capsule-container">
-        <button id="record-btn" class="capsule-btn" title="点击录音 / Alt+Space 按住 / 双击或右键打开配置">
+        <button id="record-btn" class="capsule-btn" title="点击录音 / Alt+E 按住 / 双击或右键打开配置">
           <div class="idle-dots">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
           </div>
@@ -29,8 +29,9 @@
               d="M17 11a1 1 0 1 1 2 0 7 7 0 0 1-6 6.93V21h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.07A7 7 0 0 1 5 11a1 1 0 1 1 2 0 5 5 0 1 0 10 0z" />
           </svg>
         </button>
+        <span id="status-text" class="status-text">就绪</span>
       </div>
-      <div id="error-bar"></div>
+      <div id="error-bar" class="error-bar"></div>
     </div>
 
     <!-- 视图 2：主界面控制台 -->
@@ -76,6 +77,7 @@
         <!-- 内容主区 -->
         <div class="content">
           <div class="content-header">
+            <button id="close-dashboard-btn" class="window-close-btn" title="关闭控制台" aria-label="关闭控制台">&times;</button>
           </div>
           <!-- 状态页 -->
           <div id="tab-status" class="tab-pane active">
@@ -100,11 +102,16 @@
             </div>
             <div class="card">
               <h3>VAD 连续识别模式</h3>
-              <p class="desc">在安静环境下持续聆听，说完即转换为输入。</p>
+              <p class="desc">持续聆听，说完即转换为输入。嘈杂环境或麦克风有底噪时请降低灵敏度。</p>
               <label class="toggle-switch">
                 <input type="checkbox" id="dashboard-vad-toggle">
                 <span class="slider"></span>
               </label>
+              <div class="form-group" style="margin-top:12px">
+                <label style="font-size:12px;color:var(--text-secondary)">触发灵敏度：<span id="vad-threshold-display">0.06</span></label>
+                <input type="range" id="cfg-vad-threshold" min="0.01" max="0.20" step="0.01" value="0.06" style="width:100%;margin-top:4px">
+                <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-secondary);margin-top:2px"><span>高（易触发）</span><span>低（抗噪）</span></div>
+              </div>
             </div>
             <div class="card">
               <h3>最近识别记录</h3>
@@ -122,6 +129,7 @@
               <button class="sub-tab" data-subtab="settings-commands">语音指令</button>
               <button class="sub-tab" data-subtab="settings-hotwords">热词管理</button>
               <button class="sub-tab" data-subtab="settings-text-rules">文本规则</button>
+              <button class="sub-tab" data-subtab="settings-about">程序信息</button>
             </div>
 
             <!-- 子页：基本设置 -->
@@ -129,8 +137,15 @@
               <div class="card">
                 <div class="form-group">
                   <label>组合热键 (推入录音)</label>
-                  <input id="cfg-hotkey" type="text" class="input" placeholder="Alt+Space" />
-                  <span class="tip">长按此键说话。</span>
+                  <input id="cfg-hotkey" type="text" class="input" placeholder="点击后按下快捷键（如 Alt+E）" />
+                  <span class="tip">点击输入框后按下按键录制，支持组合键，Backspace/Delete 可清空。</span>
+                </div>
+                <div class="form-group">
+                  <label>输入设备 (麦克风)</label>
+                  <select id="cfg-audio-input-device" class="input">
+                    <option value="">系统默认</option>
+                  </select>
+                  <span class="tip">选择用于录音的麦克风设备。</span>
                 </div>
                 <div class="form-group row-group">
                   <label class="checkbox">
@@ -159,7 +174,7 @@
 
             <!-- 子页：语音指令 -->
             <div id="subtab-settings-commands" class="sub-tab-pane">
-              <p class="desc">把常用快捷键和口令绑定，说出口令后系统自动触发对应的键盘快捷键。</p>
+              <p class="desc">把常用快捷键和口令绑定，说出口令后系统自动触发对应键盘快捷键。口令会自动注入识别热词，但不会显示在热词维护列表中。</p>
               <div class="card">
                 <div id="cmd-editor-list" class="cmd-editor-list"></div>
                 <button id="add-cmd-btn" class="btn btn-outline">+ 增加映射</button>
@@ -212,6 +227,17 @@
               <div class="actions-row">
                 <div id="text-rules-save-hint" class="save-hint"></div>
                 <button id="save-text-rules-btn" class="btn btn-primary">保存文本规则</button>
+              </div>
+            </div>
+
+            <!-- 子页：程序信息 -->
+            <div id="subtab-settings-about" class="sub-tab-pane">
+              <div class="card">
+                <h3>程序信息</h3>
+                <div class="app-info-item">
+                  <span class="app-info-label">版本号</span>
+                  <span id="app-version-value" class="app-info-value">--</span>
+                </div>
               </div>
             </div>
           </div>

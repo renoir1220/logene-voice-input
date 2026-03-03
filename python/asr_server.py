@@ -13,7 +13,7 @@ ASR Sidecar 进程 — 基于 FunASR，通过 stdin/stdout JSON 协议与 Electr
       "vadBackend":"funasr_onnx_vad",
       "vadQuantize":true,
       "usePunc":true,
-      "puncModelName":"iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+      "puncModelName":"iic/punc_ct-transformer_zh-cn-common-vocab272727-onnx",
       "puncBackend":"funasr_onnx_punc",
       "hotwords":"肉眼所见 鳞状上皮"
     }
@@ -301,8 +301,10 @@ def handle_message(msg: dict) -> dict:
 
 
 def main():
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+    # Windows 默认 stdin/stdout 编码为系统 locale（如 GBK），强制 UTF-8 避免中文乱码
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
     send_json({"ready": True})
 
     for line in sys.stdin:

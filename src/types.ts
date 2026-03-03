@@ -3,15 +3,19 @@ declare global {
   interface Window {
     electronAPI: {
       getConfig: () => Promise<AppConfig>
+      getAppVersion: () => Promise<string>
       saveConfig: (config: AppConfig) => Promise<void>
       getFrontmostApp: () => Promise<string | null>
       captureFocusSnapshot: (reason?: string) => Promise<string | null>
       restoreFocus: (appId: string | null) => Promise<void>
       getVadEnabled: () => Promise<boolean>
       setVadEnabled: (enabled: boolean) => Promise<boolean>
+      setVadThreshold: (threshold: number) => Promise<number>
       getAsrRuntimeStatus: () => Promise<AsrRuntimeStatus>
       recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) => Promise<string>
       openDashboard: () => Promise<void>
+      closeDashboard: () => Promise<void>
+      showFloatContextMenu: () => Promise<void>
       getWindowPosition: () => Promise<[number, number]>
       setWindowPosition: (x: number, y: number) => Promise<void>
       setIgnoreMouseEvents: (ignore: boolean, opts?: { forward: boolean }) => Promise<void>
@@ -44,6 +48,7 @@ declare global {
       restartApp: () => Promise<boolean>
       onHotkeyState: (cb: (state: string) => void) => void
       onToggleVad: (cb: (enabled: boolean) => void) => void
+      onVadThresholdUpdated: (cb: (threshold: number) => void) => void
       onAsrRuntimeStatus: (cb: (status: AsrRuntimeStatus) => void) => void
       onHotkeyStopRecording: (cb: (prevAppId: string | null) => void) => void
       onModelDownloadProgress: (cb: (data: { modelId: string; percent: number; status?: string }) => void) => void
@@ -160,6 +165,7 @@ export interface AudioInputConstraintsConfig {
   echoCancellation: boolean
   noiseSuppression: boolean
   autoGainControl: boolean
+  deviceId?: string
 }
 
 export interface AudioCaptureConfig {

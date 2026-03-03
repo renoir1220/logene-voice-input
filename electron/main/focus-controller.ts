@@ -1,6 +1,7 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { logger } from './logger'
+import * as win32Focus from './win32-focus'
 
 const execAsync = promisify(exec)
 
@@ -52,11 +53,7 @@ export async function getFrontmostApp(): Promise<string | null> {
     if (process.platform === 'darwin') {
       return await getFrontmostAppDarwin()
     } else if (process.platform === 'win32') {
-      const { stdout } = await execAsync(
-        `powershell -command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class W { [DllImport(\\"user32.dll\\")] public static extern IntPtr GetForegroundWindow(); }'; [W]::GetForegroundWindow()"`,
-        { timeout: 1200 },
-      )
-      return stdout.trim() || null
+      return win32Focus.getWin32ForegroundWindow()
     } else {
       const { stdout } = await execAsync('xdotool getactivewindow', { timeout: 1200 })
       return stdout.trim() || null
@@ -76,10 +73,7 @@ export async function restoreFocus(appId: string | null): Promise<void> {
         { timeout: 1500 },
       )
     } else if (process.platform === 'win32') {
-      await execAsync(
-        `powershell -command "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class W { [DllImport(\\"user32.dll\\")] public static extern bool SetForegroundWindow(IntPtr hWnd); }'; [W]::SetForegroundWindow(${appId})"`,
-        { timeout: 1500 },
-      )
+      win32Focus.setWin32ForegroundWindow(appId)
     } else {
       await execAsync(`xdotool windowfocus ${appId}`, { timeout: 1500 })
     }
@@ -138,6 +132,19 @@ export class FocusController {
   }
 
   async captureSnapshot(reason: string, logResult = true): Promise<string | null> {
+    // tracker 已在后台持续更新 lastExternalAppId 缓存。
+    // 非 tracker 自身调用时优先返回缓存值，减少非 Windows 平台上的外部命令调用。
+    // Windows 走 win32 API 取前台句柄，开销很低，必须实时读取避免快照陈旧。
+    if (reason !== 'tracker' && this.tracker !== null && process.platform !== 'win32') {
+      const chosen = this.lastExternalAppId
+      if (logResult && this.debugTrace) {
+        logger.debug(
+          `[Focus] snapshot reason=${reason} using cached lastExternal=${chosen ?? 'null'}`,
+        )
+      }
+      return chosen
+    }
+
     const current = await this.getCurrentFrontmost()
     const chosen = current && !this.options.isSelfAppId(current)
       ? current
@@ -170,7 +177,8 @@ export class FocusController {
       if (this.debugTrace) {
         logger.debug(`[Focus] restore attempt=${i + 1} reason=${reason} target=${target} current=${current ?? 'null'}`)
       }
-      if (current === target || (current && !this.options.isSelfAppId(current))) {
+      // 必须命中目标窗口才算成功；否则会把后续粘贴落到错误窗口。
+      if (current === target) {
         if (this.debugTrace) logger.debug(`[Focus] restore success attempt=${i + 1} reason=${reason} target=${target}`)
         return
       }

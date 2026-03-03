@@ -16,12 +16,18 @@ const CAPTURE_BUFFER_SIZE = 1024
 const CAPTURE_WORKLET_NAME = 'pcm-capture-processor'
 const PCM_SAMPLE_RATE = 16000
 
-const VAD_SAMPLE_INTERVAL_MS = 50
+const VAD_SAMPLE_INTERVAL_MS = 40
 const VAD_RMS_EMA_ALPHA = 0.28
 const VAD_STOP_HYSTERESIS_RATIO = 0.72
-const VAD_START_TRIGGER_MS = 100
-const VAD_RELEASE_TRIGGER_MS = 120
-const VAD_ENDPOINT_HANGOVER_MS = 120
+const VAD_NOISE_FLOOR_EMA_ALPHA = 0.08
+const VAD_NOISE_FLOOR_START_RATIO = 1.6
+const VAD_NOISE_FLOOR_STOP_RATIO = 1.18
+const VAD_START_TRIGGER_MS = 60
+const VAD_RELEASE_TRIGGER_MS = 80
+const VAD_ENDPOINT_HANGOVER_MS = 60
+const VAD_MAX_SPEECH_MS = 12000
+const VAD_PRE_ROLL_MS = 260
+const VAD_HARD_MIN_WAV_MS = 90
 
 const DEFAULT_AUDIO_CAPTURE_CONFIG: AudioCaptureConfig = {
   inputConstraints: {
@@ -30,7 +36,7 @@ const DEFAULT_AUDIO_CAPTURE_CONFIG: AudioCaptureConfig = {
     noiseSuppression: false,
     autoGainControl: false,
   },
-  postRollMs: 200,
+  postRollMs: 100,
   tailSilenceMs: 120,
   workletFlushTimeoutMs: 220,
 }
@@ -128,12 +134,16 @@ function safeJson(value: unknown): string {
 
 function buildAudioConstraints(config: AudioCaptureConfig): MediaTrackConstraints {
   const channelCount = config.inputConstraints.channelCount
-  return {
+  const constraints: MediaTrackConstraints = {
     channelCount: channelCount === 1 ? { ideal: 1, max: 1 } : { ideal: channelCount },
     echoCancellation: config.inputConstraints.echoCancellation,
     noiseSuppression: config.inputConstraints.noiseSuppression,
     autoGainControl: config.inputConstraints.autoGainControl,
   }
+  if (config.inputConstraints.deviceId) {
+    constraints.deviceId = { exact: config.inputConstraints.deviceId }
+  }
+  return constraints
 }
 
 function applySpeechContentHint(stream: MediaStream, reason: 'capture' | 'vad'): void {
@@ -223,22 +233,19 @@ async function initMic(): Promise<void> {
   }
 
   const constraints = buildAudioConstraints(runtimeAudioCaptureConfig)
-  console.warn('[录音] 请求麦克风，constraints:', safeJson(constraints))
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints, video: false })
-  } catch (err) {
-    // 约束匹配失败时，用最简约束重试一次
-    if (err instanceof DOMException && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError')) {
-      console.warn(`[录音] getUserMedia 失败(${err.name})，尝试简约束 {audio:true}`)
-      try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-      } catch (retryErr) {
-        console.warn(`[录音] getUserMedia 简约束也失败: ${String(retryErr)}`)
-        await throwMicError('录音')
-      }
+  } catch (e) {
+    const err = e as DOMException
+    console.error(`[录音] 麦克风初始化失败: ${err.name}: ${err.message}`)
+    if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+      throw new Error('未检测到麦克风设备，请连接麦克风后重试')
+    } else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      throw new Error('麦克风权限被拒绝，请在系统设置中允许访问麦克风')
+    } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+      throw new Error('麦克风被其他应用占用或无法读取，请关闭其他录音程序后重试')
     } else {
-      console.warn(`[录音] getUserMedia 失败: ${String(err)}`)
-      await throwMicError('录音')
+      throw new Error(`麦克风初始化失败: ${err.message || err.name}`)
     }
   }
   mediaStreamConstraintVersion = inputConstraintVersion
@@ -278,17 +285,24 @@ async function initVadMic(): Promise<void> {
 }
 
 // 开始采集 PCM
-export async function startCapture(): Promise<void> {
+export async function startCapture(initialChunks?: Float32Array[]): Promise<void> {
   if (captureStopPromise) {
     try { await captureStopPromise } catch { /* ignore */ }
   }
   if (isCapturing) return
 
   await initMic()
-  audioCtx = new AudioContext({ sampleRate: PCM_SAMPLE_RATE })
+
+  // 复用已有 AudioContext，避免 Windows 上每次重建的延迟
+  if (!audioCtx || audioCtx.state === 'closed') {
+    audioCtx = new AudioContext({ sampleRate: PCM_SAMPLE_RATE })
+    workletModuleReady = false
+  }
   await audioCtx.resume()
   captureSource = audioCtx.createMediaStreamSource(mediaStream!)
-  pcmSamples = []
+  pcmSamples = Array.isArray(initialChunks)
+    ? initialChunks.map((chunk) => new Float32Array(chunk))
+    : []
   isCapturing = true
 
   captureWorkletNode = await createCaptureWorkletNode(audioCtx)
@@ -358,21 +372,15 @@ export async function stopCapture(): Promise<ArrayBuffer> {
     }
     isCapturing = false
 
-    try { source.disconnect() } catch { /* ignore */ }
+    // 先清空旧 worklet 的消息处理器，防止延迟消息污染下次录音
+    if (workletNode) workletNode.port.onmessage = null
+    try { source?.disconnect() } catch { /* ignore */ }
     try { workletNode?.disconnect() } catch { /* ignore */ }
-    try { processor.disconnect() } catch { /* ignore */ }
+    try { processor?.disconnect() } catch { /* ignore */ }
     scriptProcessor = null
     captureSource = null
     captureWorkletNode = null
-    audioCtx = null
-
-    try {
-      if (ctx.state !== 'closed') {
-        await ctx.close()
-      }
-    } catch {
-      // ignore close failure
-    }
+    // AudioContext 保留复用，不关闭（避免 Windows 上重建延迟）
 
     const chunks = pcmSamples
     pcmSamples = []
@@ -407,7 +415,7 @@ async function createCaptureWorkletNode(ctx: AudioContext): Promise<AudioWorklet
 
   try {
     if (!workletModuleReady) {
-      await ctx.audioWorklet.addModule(new URL('./worklets/pcm-capture-processor.js', import.meta.url))
+      await ctx.audioWorklet.addModule('/worklets/pcm-capture-processor.js')
       workletModuleReady = true
     }
     const node = new AudioWorkletNode(ctx, CAPTURE_WORKLET_NAME, {
@@ -498,8 +506,10 @@ let vadIsProcessing = false
 let vadCapturePromise: Promise<void> | null = null
 let vadPrevAppId: string | null = null
 let vadSmoothedRms = 0
+let vadNoiseFloorRms = 0
 let vadAboveThresholdSince = 0
 let vadBelowThresholdSince = 0
+let vadPreRollChunks: Float32Array[] = []
 
 export async function startVad(vadState: VadState, cb: VadCallbacks): Promise<void> {
   if (!vadState.enabled || vadIsProcessing || vadTimer) return
@@ -508,11 +518,49 @@ export async function startVad(vadState: VadState, cb: VadCallbacks): Promise<vo
   vadAudioCtx = new AudioContext({ sampleRate: PCM_SAMPLE_RATE })
   await vadAudioCtx.resume()
   vadAnalyser = vadAudioCtx.createAnalyser()
-  vadAnalyser.fftSize = 2048
+  vadAnalyser.fftSize = 1024
   vadSource = vadAudioCtx.createMediaStreamSource(vadStream!)
   vadSource.connect(vadAnalyser)
 
   const dataArray = new Float32Array(vadAnalyser.fftSize)
+  const maxPreRollChunks = Math.max(1, Math.ceil(VAD_PRE_ROLL_MS / VAD_SAMPLE_INTERVAL_MS))
+  const finalizeSpeechSegment = (speechEndAt: number) => {
+    vadIsSpeaking = false
+    vadBelowThresholdSince = 0
+    const speechDuration = Math.max(0, speechEndAt - vadSpeakingStart)
+    const captureReady = vadCapturePromise
+    const prevAppId = vadPrevAppId
+    vadCapturePromise = null
+    vadPrevAppId = null
+    vadIsProcessing = true
+
+    Promise.resolve(captureReady)
+      .catch(() => null)
+      .then(async () => {
+        const wav = await stopCapture()
+        const wavPcmBytes = Math.max(0, wav.byteLength - 44)
+        const wavDurationMs = Math.round((wavPcmBytes / 2 / PCM_SAMPLE_RATE) * 1000)
+        const effectiveSpeechMs = Math.max(speechDuration, wavDurationMs - runtimeAudioCaptureConfig.tailSilenceMs)
+        const minSpeechGateMs = Math.max(VAD_HARD_MIN_WAV_MS, Math.min(vadState.minSpeechMs, 260))
+        if (effectiveSpeechMs < minSpeechGateMs || wavDurationMs < VAD_HARD_MIN_WAV_MS) {
+          cb.setState('idle')
+          return
+        }
+        cb.setState('recognizing')
+        return cb.recognizeWav(wav, prevAppId)
+          .then(result => {
+            cb.setState('idle')
+            if (result) cb.showResult(result)
+          })
+          .catch(e => {
+            cb.setState('idle')
+            cb.showError(String(e))
+          })
+      })
+      .finally(() => {
+        vadIsProcessing = false
+      })
+  }
 
   vadTimer = setInterval(() => {
     if (!vadAnalyser || vadIsProcessing) return
@@ -522,13 +570,30 @@ export async function startVad(vadState: VadState, cb: VadCallbacks): Promise<vo
     let sum = 0
     for (const v of dataArray) sum += v * v
     const rms = Math.sqrt(sum / dataArray.length)
+    if (!vadIsSpeaking) {
+      vadPreRollChunks.push(new Float32Array(dataArray))
+      if (vadPreRollChunks.length > maxPreRollChunks) {
+        vadPreRollChunks.shift()
+      }
+    }
     vadSmoothedRms = vadSmoothedRms === 0
       ? rms
       : vadSmoothedRms + VAD_RMS_EMA_ALPHA * (rms - vadSmoothedRms)
+    if (!vadIsSpeaking) {
+      vadNoiseFloorRms = vadNoiseFloorRms === 0
+        ? vadSmoothedRms
+        : vadNoiseFloorRms + VAD_NOISE_FLOOR_EMA_ALPHA * (vadSmoothedRms - vadNoiseFloorRms)
+    }
 
     const now = Date.now()
-    const startThreshold = Math.max(0.0001, vadState.threshold)
-    const stopThreshold = Math.max(0.00005, startThreshold * VAD_STOP_HYSTERESIS_RATIO)
+    const configuredThreshold = Math.max(0.0001, vadState.threshold)
+    const adaptiveStartThreshold = Math.max(0.0001, vadNoiseFloorRms * VAD_NOISE_FLOOR_START_RATIO)
+    const startThreshold = Math.max(configuredThreshold, adaptiveStartThreshold)
+    const stopThreshold = Math.max(
+      0.00005,
+      startThreshold * VAD_STOP_HYSTERESIS_RATIO,
+      vadNoiseFloorRms * VAD_NOISE_FLOOR_STOP_RATIO,
+    )
 
     if (!vadIsSpeaking) {
       if (vadSmoothedRms > startThreshold) {
@@ -544,7 +609,8 @@ export async function startVad(vadState: VadState, cb: VadCallbacks): Promise<vo
             .then((appId) => { if (vadIsSpeaking) vadPrevAppId = appId })
             .catch(() => { if (vadIsSpeaking) vadPrevAppId = null })
 
-          vadCapturePromise = startCapture().catch((e) => {
+          const preRollChunks = vadPreRollChunks.map((chunk) => new Float32Array(chunk))
+          vadCapturePromise = startCapture(preRollChunks).catch((e) => {
             vadIsSpeaking = false
             vadCapturePromise = null
             vadPrevAppId = null
@@ -557,6 +623,12 @@ export async function startVad(vadState: VadState, cb: VadCallbacks): Promise<vo
       } else {
         vadAboveThresholdSince = 0
       }
+      return
+    }
+
+    if (now - vadSpeakingStart >= VAD_MAX_SPEECH_MS) {
+      vadSilenceStart = now
+      finalizeSpeechSegment(now)
       return
     }
 
@@ -579,39 +651,24 @@ export async function startVad(vadState: VadState, cb: VadCallbacks): Promise<vo
       return
     }
 
-    vadIsSpeaking = false
-    vadBelowThresholdSince = 0
-    const speechDuration = vadSilenceStart - vadSpeakingStart
-    const captureReady = vadCapturePromise
-    const prevAppId = vadPrevAppId
-    vadCapturePromise = null
-    vadPrevAppId = null
-    vadIsProcessing = true
-
-    Promise.resolve(captureReady)
-      .catch(() => null)
-      .then(async () => {
-        if (speechDuration < vadState.minSpeechMs) {
-          await stopCapture()
-          cb.setState('idle')
-          return
-        }
-        cb.setState('recognizing')
-        const wav = await stopCapture()
-        return cb.recognizeWav(wav, prevAppId)
-          .then(result => {
-            cb.setState('idle')
-            if (result) cb.showResult(result)
-          })
-          .catch(e => {
-            cb.setState('idle')
-            cb.showError(String(e))
-          })
-      })
-      .finally(() => {
-        vadIsProcessing = false
-      })
+    finalizeSpeechSegment(vadSilenceStart)
   }, VAD_SAMPLE_INTERVAL_MS)
+}
+
+// 重置 VAD 语音状态（手动点击停止录音时调用，避免 VAD 状态机卡死）
+export function resetVadSpeakingState(): void {
+  if (!vadIsSpeaking && !vadIsProcessing) return
+  vadIsSpeaking = false
+  vadIsProcessing = false
+  vadCapturePromise = null
+  vadPrevAppId = null
+  vadSpeakingStart = 0
+  vadSilenceStart = 0
+  vadSmoothedRms = 0
+  vadNoiseFloorRms = 0
+  vadAboveThresholdSince = 0
+  vadBelowThresholdSince = 0
+  vadPreRollChunks = []
 }
 
 export function stopVad(): void {
@@ -631,6 +688,8 @@ export function stopVad(): void {
   vadIsSpeaking = false
   vadIsProcessing = false
   vadSmoothedRms = 0
+  vadNoiseFloorRms = 0
   vadAboveThresholdSince = 0
   vadBelowThresholdSince = 0
+  vadPreRollChunks = []
 }

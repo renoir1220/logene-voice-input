@@ -127,6 +127,7 @@ export interface AudioInputConstraintsConfig {
   echoCancellation: boolean
   noiseSuppression: boolean
   autoGainControl: boolean
+  deviceId?: string
 }
 
 export interface AudioCaptureConfig {
@@ -174,10 +175,13 @@ export interface AppConfig {
   logging: LoggingConfig
 }
 
+const FALLBACK_RECORD_HOTKEY = 'Alt+E'
+const WIN_FORBIDDEN_RECORD_HOTKEY = 'ALT+SPACE'
+
 // 默认配置
 const defaultConfig: AppConfig = {
   server: { url: 'http://localhost:3000', asrConfigId: '' },
-  hotkey: { record: 'Alt+Space' },
+  hotkey: { record: FALLBACK_RECORD_HOTKEY },
   input: { useClipboard: false },
   audioCapture: {
     inputConstraints: {
@@ -192,7 +196,7 @@ const defaultConfig: AppConfig = {
   },
   vad: {
     enabled: false,
-    speechThreshold: 0.03,
+    speechThreshold: 0.06,
     silenceTimeoutMs: 800,
     minSpeechDurationMs: 300,
   },
@@ -254,6 +258,13 @@ const defaultConfig: AppConfig = {
   },
 }
 
+const VAD_SPEECH_THRESHOLD_MIN = 0.01
+const VAD_SPEECH_THRESHOLD_MAX = 0.2
+const VAD_SILENCE_TIMEOUT_MIN_MS = 200
+const VAD_SILENCE_TIMEOUT_MAX_MS = 4000
+const VAD_MIN_SPEECH_DURATION_MIN_MS = 120
+const VAD_MIN_SPEECH_DURATION_MAX_MS = 4000
+
 // electron-store 实例
 const store = new Store<AppConfig>({
   name: 'config',
@@ -265,6 +276,7 @@ export function getConfig(): AppConfig {
   cfg.llm = normalizeLlmConfig(cfg.llm as unknown)
   cfg.textRules = normalizeTextRulesConfig(cfg.textRules as unknown)
   cfg.audioCapture = normalizeAudioCaptureConfig(cfg.audioCapture as unknown)
+  cfg.vad = normalizeVadConfig(cfg.vad as unknown)
   if (!cfg.asr || typeof cfg.asr !== 'object') {
     cfg.asr = { ...defaultConfig.asr }
   }
@@ -277,6 +289,10 @@ export function getConfig(): AppConfig {
   if (typeof cfg.logging.enableDebug !== 'boolean') {
     cfg.logging.enableDebug = false
   }
+  if (!cfg.hotkey || typeof cfg.hotkey !== 'object') {
+    cfg.hotkey = { ...defaultConfig.hotkey }
+  }
+  cfg.hotkey.record = normalizeRecordHotkey((cfg.hotkey as { record?: unknown }).record)
   cfg.onboarding = normalizeOnboardingConfig(cfg.onboarding)
   // 迁移旧模型 ID：本地识别仅保留 ONNX 量化热词模型。
   if (cfg.asr?.localModel !== 'paraformer-zh-contextual-quant') {
@@ -290,6 +306,7 @@ export function saveConfig(config: AppConfig): void {
   config.llm = normalizeLlmConfig(config.llm as unknown)
   config.textRules = normalizeTextRulesConfig(config.textRules as unknown)
   config.audioCapture = normalizeAudioCaptureConfig(config.audioCapture as unknown)
+  config.vad = normalizeVadConfig(config.vad as unknown)
   if (!config.asr || typeof config.asr !== 'object') {
     config.asr = { ...defaultConfig.asr }
   }
@@ -302,8 +319,27 @@ export function saveConfig(config: AppConfig): void {
   if (typeof config.logging.enableDebug !== 'boolean') {
     config.logging.enableDebug = false
   }
+  if (!config.hotkey || typeof config.hotkey !== 'object') {
+    config.hotkey = { ...defaultConfig.hotkey }
+  }
+  config.hotkey.record = normalizeRecordHotkey((config.hotkey as { record?: unknown }).record)
   config.onboarding = normalizeOnboardingConfig(config.onboarding)
   store.store = config
+}
+
+function normalizeRecordHotkey(raw: unknown): string {
+  const source = typeof raw === 'string' ? raw.trim() : ''
+  const normalized = source || defaultConfig.hotkey.record
+  if (process.platform !== 'win32') return normalized
+  const upper = normalized
+    .split('+')
+    .map((part) => part.trim().toUpperCase())
+    .filter(Boolean)
+    .join('+')
+  if (upper === WIN_FORBIDDEN_RECORD_HOTKEY) {
+    return FALLBACK_RECORD_HOTKEY
+  }
+  return normalized
 }
 
 function clampNumber(raw: unknown, fallback: number, min: number, max: number): number {
@@ -329,6 +365,7 @@ function normalizeAudioInputConstraints(raw: unknown): AudioInputConstraintsConf
     autoGainControl: typeof source.autoGainControl === 'boolean'
       ? source.autoGainControl
       : defaultConfig.audioCapture.inputConstraints.autoGainControl,
+    deviceId: typeof source.deviceId === 'string' && source.deviceId ? source.deviceId : undefined,
   }
 }
 
@@ -343,6 +380,33 @@ function normalizeAudioCaptureConfig(raw: unknown): AudioCaptureConfig {
       defaultConfig.audioCapture.workletFlushTimeoutMs,
       80,
       2000,
+    )),
+  }
+}
+
+function normalizeVadConfig(raw: unknown): AppConfig['vad'] {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    enabled: typeof source.enabled === 'boolean'
+      ? source.enabled
+      : defaultConfig.vad.enabled,
+    speechThreshold: clampNumber(
+      source.speechThreshold,
+      defaultConfig.vad.speechThreshold,
+      VAD_SPEECH_THRESHOLD_MIN,
+      VAD_SPEECH_THRESHOLD_MAX,
+    ),
+    silenceTimeoutMs: Math.round(clampNumber(
+      source.silenceTimeoutMs,
+      defaultConfig.vad.silenceTimeoutMs,
+      VAD_SILENCE_TIMEOUT_MIN_MS,
+      VAD_SILENCE_TIMEOUT_MAX_MS,
+    )),
+    minSpeechDurationMs: Math.round(clampNumber(
+      source.minSpeechDurationMs,
+      defaultConfig.vad.minSpeechDurationMs,
+      VAD_MIN_SPEECH_DURATION_MIN_MS,
+      VAD_MIN_SPEECH_DURATION_MAX_MS,
     )),
   }
 }

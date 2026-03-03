@@ -46,6 +46,12 @@ def validate_onnx_files(model_dir: str, backend: str, quantize: bool):
 
 
 def get_missing_onnx_files(model_dir: str, backend: str, quantize: bool):
+    # PUNC ONNX 模型只提供 model_quant.onnx，不需要常规 ASR 的文件检查
+    if backend == "funasr_onnx_punc":
+        if not os.path.exists(os.path.join(model_dir, "model_quant.onnx")):
+            return ["model_quant.onnx"]
+        return []
+
     missing = []
     if quantize:
         if not os.path.exists(os.path.join(model_dir, "model_quant.onnx")):
@@ -196,9 +202,19 @@ def download_model_with_progress(dependencies, msg_id: int):
             resolved = resolve_model_id(model_name)
             if is_model_cached(resolved):
                 if backend.startswith("funasr_onnx"):
-                    validate_onnx_files(get_model_cache_path(resolved), backend, quantize)
-                send_json({"id": msg_id, "progress": next_progress})
-                continue
+                    try:
+                        validate_onnx_files(get_model_cache_path(resolved), backend, quantize)
+                        send_json({"id": msg_id, "progress": next_progress})
+                        continue
+                    except RuntimeError:
+                        # 缓存不完整，删除后重新下载
+                        import shutil
+                        cache_path = get_model_cache_path(resolved)
+                        send_json({"id": msg_id, "progress": base_progress, "status": f"{role}模型缓存不完整，正在重新下载..."})
+                        shutil.rmtree(cache_path, ignore_errors=True)
+                else:
+                    send_json({"id": msg_id, "progress": next_progress})
+                    continue
 
             send_json(
                 {

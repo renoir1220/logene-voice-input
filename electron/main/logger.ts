@@ -89,9 +89,9 @@ function write(level: LogLevel, msg: string) {
   _sendToRenderer?.(entry)
 
   // 同时输出到控制台
-  if (level === 'error') console.error(`[LOG] ${msg}`)
-  else if (level === 'debug') console.debug(`[LOG] ${msg}`)
-  else console.log(`[LOG] ${msg}`)
+  if (level === 'error') console.error(`[${entry.time}] [LOG] ${msg}`)
+  else if (level === 'debug') console.debug(`[${entry.time}] [LOG] ${msg}`)
+  else console.log(`[${entry.time}] [LOG] ${msg}`)
 }
 
 export const logger = {

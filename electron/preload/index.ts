@@ -4,12 +4,14 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('electronAPI', {
   // 渲染进程 → 主进程（invoke，有返回值）
   getConfig: () => ipcRenderer.invoke('get-config'),
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   saveConfig: (config: unknown) => ipcRenderer.invoke('save-config', config),
   getFrontmostApp: () => ipcRenderer.invoke('get-frontmost-app'),
   captureFocusSnapshot: (reason?: string) => ipcRenderer.invoke('capture-focus-snapshot', reason),
   restoreFocus: (appId: string | null) => ipcRenderer.invoke('restore-focus', appId),
   getVadEnabled: () => ipcRenderer.invoke('get-vad-enabled'),
   setVadEnabled: (enabled: boolean) => ipcRenderer.invoke('set-vad-enabled', enabled),
+  setVadThreshold: (threshold: number) => ipcRenderer.invoke('set-vad-threshold', threshold),
   getAsrRuntimeStatus: () => ipcRenderer.invoke('get-asr-runtime-status'),
   recognizeWav: (wavBuffer: ArrayBuffer, prevAppId: string | null) =>
     ipcRenderer.invoke('recognize-wav', wavBuffer, prevAppId),
@@ -48,6 +50,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 重写专用通道
   openDashboard: () => ipcRenderer.invoke('open-dashboard'),
+  closeDashboard: () => ipcRenderer.invoke('close-dashboard'),
+  showFloatContextMenu: () => ipcRenderer.invoke('show-float-context-menu'),
   closeRewrite: () => ipcRenderer.invoke('close-rewrite'),
   executeRewrite: (text: string, instruction: string) => ipcRenderer.invoke('execute-rewrite', text, instruction),
   replaceText: (newText: string) => ipcRenderer.invoke('replace-text', newText),
@@ -58,6 +62,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onToggleVad: (cb: (enabled: boolean) => void) => {
     ipcRenderer.on('toggle-vad', (_e, enabled) => cb(Boolean(enabled)))
+  },
+  onVadThresholdUpdated: (cb: (threshold: number) => void) => {
+    ipcRenderer.on('vad-threshold-updated', (_e, threshold) => cb(Number(threshold)))
   },
   onAsrRuntimeStatus: (cb: (status: {
     phase: 'idle' | 'starting' | 'ready' | 'error'

@@ -1,9 +1,9 @@
-import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent, app } from 'electron'
+import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent, app, Menu } from 'electron'
 import * as path from 'path'
 import { getConfig, saveConfig, AppConfig } from './config'
 import { recognize } from './asr'
-import { recognizeLocal, initLocalRecognizer } from './local-asr'
-import { getModelInfoList, inspectLocalModelStatus } from './model-manager'
+import { recognizeLocal, initLocalRecognizer, disposeLocalRecognizer } from './local-asr'
+import { getModelInfoList, inspectLocalModelStatus, deleteModelCache } from './model-manager'
 import { logger, getLogBuffer, clearLogs } from './logger'
 import { matchVoiceCommand } from './voice-commands'
 import { typeText, sendShortcut } from './input-sim'
@@ -44,6 +44,14 @@ let asrRuntimeStatus: AsrRuntimeStatus = {
 let asrRequestSeq = 0
 let localAsrInitPromise: Promise<void> | null = null
 let localAsrInitModelId: string | null = null
+
+const VAD_THRESHOLD_MIN = 0.01
+const VAD_THRESHOLD_MAX = 0.2
+
+function clampVadThreshold(raw: unknown): number {
+  const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : VAD_THRESHOLD_MIN
+  return Math.min(VAD_THRESHOLD_MAX, Math.max(VAD_THRESHOLD_MIN, value))
+}
 
 export function emitAsrRuntimeStatus() {
   mainWindow?.webContents.send('asr-runtime-status', asrRuntimeStatus)
@@ -162,6 +170,7 @@ export function setupIpc(
   }
 
   handle('get-config', () => getConfig())
+  handle('get-app-version', () => app.getVersion())
   handle('get-frontmost-app', async () => {
     return focusController.captureSnapshot('ipc-get-frontmost')
   })
@@ -228,6 +237,9 @@ export function setupIpc(
       } : current.llm,
     }
     saveConfig(merged)
+    const syncedVadThreshold = clampVadThreshold(merged.vad?.speechThreshold)
+    mainWindow?.webContents.send('vad-threshold-updated', syncedVadThreshold)
+    dashboardWindow?.webContents.send('vad-threshold-updated', syncedVadThreshold)
     updateTrayMenu()
     if ((merged.asr?.mode ?? 'api') === 'local') {
       void ensureLocalRecognizerReady('config-save').catch(() => { })
@@ -248,6 +260,18 @@ export function setupIpc(
   handle('get-vad-enabled', () => vadEnabled)
   handle('set-vad-enabled', (_event, enabled: boolean) => {
     return setVadEnabledState(Boolean(enabled))
+  })
+  handle('set-vad-threshold', (_event, threshold: number) => {
+    const normalizedThreshold = clampVadThreshold(threshold)
+    const cfg = getConfig()
+    cfg.vad = {
+      ...cfg.vad,
+      speechThreshold: normalizedThreshold,
+    }
+    saveConfig(cfg)
+    mainWindow?.webContents.send('vad-threshold-updated', normalizedThreshold)
+    dashboardWindow?.webContents.send('vad-threshold-updated', normalizedThreshold)
+    return normalizedThreshold
   })
 
   handle('get-asr-runtime-status', () => asrRuntimeStatus)
@@ -272,7 +296,7 @@ export function setupIpc(
     return true
   })
 
-  handle('open-dashboard', () => {
+  function openDashboardWindow() {
     if (dashboardWindow) {
       if (dashboardWindow.isMinimized()) dashboardWindow.restore()
       dashboardWindow.show()
@@ -280,14 +304,19 @@ export function setupIpc(
       return
     }
 
+    const isMac = process.platform === 'darwin'
+    const isWin = process.platform === 'win32'
     const win = new BrowserWindow({
-      width: 800,
-      height: 600,
-      minWidth: 640,
-      minHeight: 480,
+      width: 1120,
+      height: 720,
+      minWidth: 940,
+      minHeight: 620,
       title: '朗珈语音输入法 - 控制台',
-      titleBarStyle: 'hidden',
-      trafficLightPosition: { x: 14, y: 14 },
+      icon: app.isPackaged
+        ? path.join(process.resourcesPath, 'icon.png')
+        : path.join(__dirname, '../../build/icons/icon.png'),
+      frame: !isWin,
+      ...(isMac ? { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 14 } } : {}),
       webPreferences: {
         preload: path.join(__dirname, '../preload/index.js'),
         contextIsolation: true,
@@ -309,6 +338,35 @@ export function setupIpc(
     win.on('closed', () => {
       setDashboardWindow(null)
     })
+  }
+
+  handle('show-float-context-menu', () => {
+    const menu = Menu.buildFromTemplate([
+      {
+        label: mainWindow?.isVisible() ? '隐藏窗口' : '显示窗口',
+        click: () => {
+          if (mainWindow?.isVisible()) mainWindow.hide()
+          else mainWindow?.showInactive()
+          updateTrayMenu()
+        },
+      },
+      {
+        label: vadEnabled ? '关闭 VAD 智能模式' : '开启 VAD 智能模式',
+        click: () => {
+          setVadEnabledState(!vadEnabled, true)
+        },
+      },
+      { type: 'separator' },
+      { label: '打开控制台', click: () => { openDashboardWindow() } },
+      { type: 'separator' },
+      { label: '退出', click: () => app.quit() },
+    ])
+    if (mainWindow) menu.popup({ window: mainWindow })
+  })
+
+  handle('open-dashboard', () => openDashboardWindow())
+  handle('close-dashboard', () => {
+    dashboardWindow?.close()
   })
 
   handle('restart-app', () => {
@@ -325,9 +383,38 @@ export function setupIpc(
     const asrMode = cfg.asr?.mode ?? 'api'
     logger.info(`[ASR#${reqId}] 收到 WAV，大小 ${buf.byteLength} 字节，模式: ${asrMode}`)
 
-    // WAV 文件头 44 字节，无实际音频数据时直接返回
-    if (buf.byteLength <= 44) {
-      logger.info(`[ASR#${reqId}] WAV 为空（≤44 字节），跳过识别`)
+    const wavPayloadBytes = Math.max(0, buf.byteLength - 44)
+    const pcmSampleCount = Math.floor(wavPayloadBytes / 2)
+    const audioDurationMs = Math.round((pcmSampleCount / 16000) * 1000)
+    if (pcmSampleCount <= 0) {
+      logger.info(`[ASR#${reqId}] WAV 无有效 PCM 数据，跳过识别`)
+      return ''
+    }
+    if (audioDurationMs < 90) {
+      logger.info(`[ASR#${reqId}] 音频时长过短 (${audioDurationMs}ms < 90ms)，跳过识别`)
+      return ''
+    }
+
+    // 检测音频能量，静音或极低活跃度时跳过识别（避免模型幻觉）
+    const pcmData = new Int16Array(buf.buffer, buf.byteOffset + 44, pcmSampleCount)
+    let sumSq = 0
+    let activeSamples = 0
+    const ACTIVE_SAMPLE_ABS_THRESHOLD = 220
+    for (let i = 0; i < pcmData.length; i++) {
+      const sample = pcmData[i]
+      const abs = Math.abs(sample)
+      if (abs >= ACTIVE_SAMPLE_ABS_THRESHOLD) activeSamples += 1
+      sumSq += sample * sample
+    }
+    const rms = Math.sqrt(sumSq / pcmData.length)
+    const activeRatio = activeSamples / pcmData.length
+    const SILENCE_RMS_THRESHOLD = 75
+    const MIN_ACTIVE_SAMPLE_RATIO = 0.008
+    if (rms < SILENCE_RMS_THRESHOLD && activeRatio < MIN_ACTIVE_SAMPLE_RATIO) {
+      logger.info(
+        `[ASR#${reqId}] 音频活跃度过低 (durationMs=${audioDurationMs}, rms=${rms.toFixed(1)}, ` +
+        `activeRatio=${activeRatio.toFixed(4)}), 跳过识别`,
+      )
       return ''
     }
 
@@ -350,9 +437,12 @@ export function setupIpc(
     if (!text.trim()) return ''
 
     const result = matchVoiceCommand(text, cfg.voiceCommands)
-    const selfFrontmost = await focusController.isSelfAppFrontmost(`asr#${reqId}`)
     const fallbackTarget = focusController.getLastExternalAppId()
     const focusTarget = prevAppId || fallbackTarget
+    // Windows 上 isSelfAppId 始终返回 false，跳过 PowerShell 调用直接尝试还原焦点
+    const selfFrontmost = process.platform !== 'win32'
+      ? await focusController.isSelfAppFrontmost(`asr#${reqId}`)
+      : false
     if (selfFrontmost) {
       logger.debug(
         `[ASR#${reqId}] skip restore because self app is frontmost prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'}`,
@@ -472,8 +562,15 @@ export function setupIpc(
     }
   })
 
-  handle('delete-model', (_event, _modelId: string) => {
-    logger.info('FunASR 模型由 ModelScope 缓存管理，如需清理请手动删除 ~/.cache/modelscope')
+  handle('delete-model', (_event, modelId: string) => {
+    logger.info(`[Model] 删除模型: ${modelId}`)
+    try {
+      deleteModelCache(modelId)
+      disposeLocalRecognizer()
+      setAsrRuntimeStatus({ phase: 'idle', modelId: null, progress: 0, message: '模型已删除' })
+    } catch (e) {
+      logger.error(`[Model] 删除失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
   })
 
   // ── 日志 IPC ──

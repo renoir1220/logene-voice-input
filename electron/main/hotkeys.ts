@@ -60,6 +60,8 @@ function nameToKeycode(name: string): number {
     Q: UiohookKey.Q, R: UiohookKey.R, S: UiohookKey.S, T: UiohookKey.T,
     U: UiohookKey.U, V: UiohookKey.V, W: UiohookKey.W, X: UiohookKey.X,
     Y: UiohookKey.Y, Z: UiohookKey.Z,
+    0: UiohookKey['0'], 1: UiohookKey['1'], 2: UiohookKey['2'], 3: UiohookKey['3'], 4: UiohookKey['4'],
+    5: UiohookKey['5'], 6: UiohookKey['6'], 7: UiohookKey['7'], 8: UiohookKey['8'], 9: UiohookKey['9'],
   }
   return map[name] ?? 0
 }
@@ -79,7 +81,28 @@ export function registerHotkey(
   }
 
   let isRecording = false
+  let awaitingModifierRelease = false
   let prevApp: string | null = null
+
+  const hasRequiredModifierPressed = (e: {
+    altKey: boolean
+    ctrlKey: boolean
+    shiftKey: boolean
+    metaKey: boolean
+  }) => (
+    (parsed.alt && e.altKey)
+    || (parsed.ctrl && e.ctrlKey)
+    || (parsed.shift && e.shiftKey)
+    || (parsed.meta && e.metaKey)
+  )
+
+  const stopRecording = () => {
+    if (!isRecording) return
+    isRecording = false
+    awaitingModifierRelease = false
+    logger.info('[热键] 松开，触发识别')
+    mainWindow?.webContents.send('hotkey-stop-recording', prevApp)
+  }
 
   uIOhook.on('keydown', async (e) => {
     if (isRecording) return
@@ -90,18 +113,32 @@ export function registerHotkey(
     if (e.metaKey !== parsed.meta) return
 
     isRecording = true
+    awaitingModifierRelease = false
+    // 先通知渲染进程开始录音，不等焦点快照（避免 Windows 上 PowerShell 延迟）
+    mainWindow?.webContents.send('hotkey-state', 'recording')
     prevApp = await focusController.captureSnapshot('hotkey-keydown')
     logger.info(`[热键] 按下，开始录音，前台应用: ${prevApp ?? 'null'}`)
-    mainWindow?.webContents.send('hotkey-state', 'recording')
   })
 
   uIOhook.on('keyup', (e) => {
     if (!isRecording) return
-    if (e.keycode !== parsed.keycode) return
+    const hasModifierPressed = hasRequiredModifierPressed(e)
 
-    isRecording = false
-    logger.info('[热键] 松开，触发识别')
-    mainWindow?.webContents.send('hotkey-stop-recording', prevApp)
+    // 主键释放时，如果修饰键仍按下，先进入等待态；避免“先松主键后松修饰键”造成后续输入串键。
+    if (e.keycode === parsed.keycode) {
+      if (hasModifierPressed) {
+        awaitingModifierRelease = true
+        logger.debug('[热键] 主键已松开，等待修饰键释放')
+        return
+      }
+      stopRecording()
+      return
+    }
+
+    // 若主键已松开且处于等待态，只要本次事件后修饰键全部释放就结束录音。
+    if (!awaitingModifierRelease) return
+    if (hasModifierPressed) return
+    stopRecording()
   })
 
   try {
@@ -115,9 +152,10 @@ export function registerHotkey(
   const registered = globalShortcut.register(config.hotkey.record, async () => {
     if (!isRecording) {
       isRecording = true
+      // 先通知渲染进程，再异步获取焦点快照
+      mainWindow?.webContents.send('hotkey-state', 'recording')
       prevApp = await focusController.captureSnapshot('hotkey-shortcut-fallback')
       console.log('[热键/拦截网] 捕获按下，开始录音，前台应用:', prevApp)
-      mainWindow?.webContents.send('hotkey-state', 'recording')
     }
   })
 

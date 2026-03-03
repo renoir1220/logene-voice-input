@@ -10,6 +10,7 @@ import {
   showResult,
   onRecordClick,
   setVadEnabled,
+  applyVadThreshold,
   applyVadEnabled,
   initVad,
   ensureAsrReadyBeforeCapture,
@@ -93,7 +94,7 @@ export function initFloatCapsuleUI() {
   })
   recordBtn.addEventListener('contextmenu', (e) => {
     e.preventDefault()
-    if (!dragMoved) window.electronAPI.openDashboard()
+    if (!dragMoved) window.electronAPI.showFloatContextMenu()
   })
 
   // VAD 按钮
@@ -148,6 +149,9 @@ export function initFloatCapsuleUI() {
   // 托盘 VAD 切换
   window.electronAPI.onToggleVad((enabled) => {
     applyVadEnabled(Boolean(enabled), true).catch((e) => showError(String(e)))
+  })
+  window.electronAPI.onVadThresholdUpdated((threshold) => {
+    applyVadThreshold(threshold)
   })
   window.electronAPI.onPermissionWarning((message) => {
     if (!message) return

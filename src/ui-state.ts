@@ -1,5 +1,5 @@
 import type { RecordState, AsrRuntimeStatus, AppConfig } from './types'
-import { startCapture, stopCapture, startVad, stopVad, setAudioCaptureConfig, VadState, VadCallbacks } from './audio'
+import { startCapture, stopCapture, startVad, stopVad, resetVadSpeakingState, setAudioCaptureConfig, VadState, VadCallbacks } from './audio'
 
 // ── 共享 UI 状态 ──
 
@@ -17,6 +17,10 @@ const SUCCESS_FLASH_MS = 180
 let startCapturePromise: Promise<void> | null = null
 let focusSnapshotAppId: string | null = null
 
+const VAD_THRESHOLD_MIN = 0.01
+const VAD_THRESHOLD_MAX = 0.2
+const VAD_DEFAULT_THRESHOLD = 0.06
+
 let asrRuntimeStatus: AsrRuntimeStatus = {
   phase: 'idle',
   modelId: null,
@@ -26,7 +30,7 @@ let asrRuntimeStatus: AsrRuntimeStatus = {
 }
 let lastAsrRuntimeError = ''
 
-export let vadState: VadState = { enabled: false, threshold: 0.03, silenceMs: 800, minSpeechMs: 300 }
+export let vadState: VadState = { enabled: false, threshold: VAD_DEFAULT_THRESHOLD, silenceMs: 500, minSpeechMs: 300 }
 let vadSyncVersion = 0
 
 export function getState(): RecordState { return state }
@@ -100,23 +104,29 @@ export function setState(newState: RecordState | string, text?: string) {
 
 export function showError(msg: string) {
   const text = String(msg).replace(/^Error:\s*/i, '')
-  if (errorBar) {
-    errorBar.textContent = text
-    errorBar.title = text
-    errorBar.classList.add('visible')
+  // errorBar 可能尚未通过 initFloatElements 初始化，动态查找
+  const bar = errorBar || document.getElementById('error-bar') as HTMLDivElement | null
+  const st = statusText || document.getElementById('status-text') as HTMLSpanElement | null
+  if (bar) {
+    bar.textContent = text
+    bar.title = text
+    bar.classList.add('visible')
   }
-  if (statusText) {
-    statusText.textContent = '出错了'
-    statusText.classList.remove('result')
+  if (st) {
+    st.textContent = '出错了'
+    st.classList.remove('result')
   }
+  // 无论 UI 元素是否存在，都输出到控制台确保可追踪
+  console.warn(`[showError] ${text}`)
   if (errorTimer) clearTimeout(errorTimer)
   errorTimer = setTimeout(hideError, 10000)
 }
 
 export function hideError() {
-  if (errorBar) {
-    errorBar.classList.remove('visible')
-    errorBar.textContent = ''
+  const bar = errorBar || document.getElementById('error-bar') as HTMLDivElement | null
+  if (bar) {
+    bar.classList.remove('visible')
+    bar.textContent = ''
   }
   if (errorTimer) { clearTimeout(errorTimer); errorTimer = null }
 }
@@ -219,6 +229,21 @@ function applyAudioCaptureFromConfig(cfg: Pick<AppConfig, 'audioCapture'> | null
   setAudioCaptureConfig(cfg.audioCapture)
 }
 
+function clampVadThreshold(raw: number): number {
+  if (!Number.isFinite(raw)) return VAD_DEFAULT_THRESHOLD
+  return Math.min(VAD_THRESHOLD_MAX, Math.max(VAD_THRESHOLD_MIN, raw))
+}
+
+export function applyVadThreshold(threshold: number): number {
+  const next = clampVadThreshold(threshold)
+  vadState.threshold = next
+  const thresholdSlider = document.getElementById('cfg-vad-threshold') as HTMLInputElement | null
+  const thresholdDisplay = document.getElementById('vad-threshold-display')
+  if (thresholdSlider) thresholdSlider.value = String(next)
+  if (thresholdDisplay) thresholdDisplay.textContent = next.toFixed(2)
+  return next
+}
+
 // ── 录音按钮点击 ──
 
 export async function onRecordClick() {
@@ -247,6 +272,8 @@ export async function onRecordClick() {
       showError(String(e))
     }
   } else if (state === 'recording') {
+    // 手动点击停止录音时，重置 VAD 内部状态，避免状态机卡死
+    if (vadState.enabled) resetVadSpeakingState()
     setState('recognizing')
     try {
       if (startCapturePromise) {
@@ -302,10 +329,11 @@ export async function applyVadEnabled(enabled: boolean, showHint: boolean) {
     applyAudioCaptureFromConfig(cfg)
     vadState = {
       enabled: true,
-      threshold: cfg.vad.speechThreshold,
+      threshold: VAD_DEFAULT_THRESHOLD,
       silenceMs: cfg.vad.silenceTimeoutMs,
       minSpeechMs: cfg.vad.minSpeechDurationMs,
     }
+    applyVadThreshold(cfg.vad.speechThreshold)
     try {
       await startVad(vadState, makeVadCallbacks())
       syncVadUi(true)
@@ -417,6 +445,9 @@ export function installRendererErrorHooks() {
       lineno: event.lineno || 0,
       colno: event.colno || 0,
     })
+    // 确保用户能看到错误
+    const msg = err instanceof Error ? err.message : (event.message || '未知错误')
+    showError(msg)
   })
 
   window.addEventListener('unhandledrejection', (event) => {
@@ -427,5 +458,8 @@ export function installRendererErrorHooks() {
       stack: reason instanceof Error ? reason.stack : '',
       reason: toShortErrorText(reason).slice(0, 4000),
     })
+    // 确保用户能看到错误
+    const msg = reason instanceof Error ? reason.message : String(reason)
+    showError(msg)
   })
 }

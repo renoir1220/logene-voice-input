@@ -1,6 +1,7 @@
 import {
   initDashboardElements,
   setVadEnabled,
+  applyVadThreshold,
   applyAsrRuntimeStatus,
   refreshAsrRuntimeStatus,
   showError,
@@ -21,6 +22,7 @@ import {
   addTextRule,
   updateAsrModeUI,
   setHotwordSearchQuery,
+  initHotkeyRecorders,
 } from '../dashboard-config'
 import {
   appendLogEntry,
@@ -40,12 +42,58 @@ export function initDashboardUI() {
   document.getElementById('main-dashboard-view')!.classList.add('active')
 
   initDashboardElements()
+  initHotkeyRecorders()
 
   const dashboardVadToggle = document.getElementById('dashboard-vad-toggle') as HTMLInputElement | null
+
+  const vadThresholdSlider = document.getElementById('cfg-vad-threshold') as HTMLInputElement | null
+  const vadThresholdDisplay = document.getElementById('vad-threshold-display')
+  let vadThresholdPersistTimer: ReturnType<typeof setTimeout> | null = null
+  let vadThresholdPersistSeq = 0
+  const persistVadThreshold = (threshold: number) => {
+    const seq = ++vadThresholdPersistSeq
+    void window.electronAPI.setVadThreshold(threshold)
+      .then((savedThreshold) => {
+        if (seq !== vadThresholdPersistSeq) return
+        applyVadThreshold(savedThreshold)
+      })
+      .catch((e) => {
+        if (seq !== vadThresholdPersistSeq) return
+        showError(`保存 VAD 灵敏度失败: ${String(e)}`)
+      })
+  }
+
+  const onVadThresholdInput = () => {
+    if (!vadThresholdSlider) return
+    const threshold = applyVadThreshold(parseFloat(vadThresholdSlider.value))
+    if (vadThresholdDisplay) vadThresholdDisplay.textContent = threshold.toFixed(2)
+    if (vadThresholdPersistTimer) clearTimeout(vadThresholdPersistTimer)
+    vadThresholdPersistTimer = setTimeout(() => {
+      vadThresholdPersistTimer = null
+      persistVadThreshold(threshold)
+    }, 220)
+  }
+
+  const onVadThresholdChange = () => {
+    if (!vadThresholdSlider) return
+    const threshold = applyVadThreshold(parseFloat(vadThresholdSlider.value))
+    if (vadThresholdDisplay) vadThresholdDisplay.textContent = threshold.toFixed(2)
+    if (vadThresholdPersistTimer) {
+      clearTimeout(vadThresholdPersistTimer)
+      vadThresholdPersistTimer = null
+    }
+    persistVadThreshold(threshold)
+  }
+
+  vadThresholdSlider?.addEventListener('input', onVadThresholdInput)
+  vadThresholdSlider?.addEventListener('change', onVadThresholdChange)
 
   document.getElementById('save-btn')!.addEventListener('click', saveConfig)
   document.getElementById('save-text-rules-btn')?.addEventListener('click', saveConfig)
   document.getElementById('llm-save-btn')?.addEventListener('click', saveConfig)
+  document.getElementById('close-dashboard-btn')?.addEventListener('click', () => {
+    void window.electronAPI.closeDashboard()
+  })
   document.getElementById('llm-add-model-btn')?.addEventListener('click', addLlmModel)
   document.getElementById('add-text-rule-btn')?.addEventListener('click', addTextRule)
 
@@ -140,6 +188,9 @@ export function initDashboardUI() {
 
   // 实时日志推送
   window.electronAPI.onLogEntry((entry) => appendLogEntry(entry))
+  window.electronAPI.onVadThresholdUpdated((threshold) => {
+    applyVadThreshold(threshold)
+  })
   window.electronAPI.onAsrRuntimeStatus((status) => {
     applyAsrRuntimeStatus(status)
     if (status.phase === 'starting') {
@@ -147,6 +198,10 @@ export function initDashboardUI() {
       setModelListHint(`本地识别启动中${suffix}：${status.message || '请稍候'}`)
     } else if (status.phase === 'error') {
       setModelListHint(`本地识别启动失败：${status.message}`, true)
+    } else if (status.phase === 'ready') {
+      setModelListHint('')
+    } else if (status.phase === 'idle') {
+      setModelListHint('')
     }
   })
   // 识别记录新增时刷新统计和历史
@@ -157,13 +212,25 @@ export function initDashboardUI() {
   void refreshAsrRuntimeStatus()
 
   initTabs()
+  void loadAppInfo()
   loadConfigToForm()
-  void initFirstUseOnboarding()
+  // void initFirstUseOnboarding()  // 暂时关闭引导
   renderCommandEditor()
   loadHotwords()
   loadLogs()
   loadStats()
   initHistoryTab()
+}
+
+async function loadAppInfo() {
+  const versionEl = document.getElementById('app-version-value')
+  if (!versionEl) return
+  try {
+    const version = await window.electronAPI.getAppVersion()
+    versionEl.textContent = version || '--'
+  } catch {
+    versionEl.textContent = '--'
+  }
 }
 
 /** 加载统计数据和历史记录 */
