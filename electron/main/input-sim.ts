@@ -1,9 +1,25 @@
-import { exec } from 'child_process'
+import { exec, execFile } from 'child_process'
 import { promisify } from 'util'
 import { clipboard } from 'electron'
 import * as win32Focus from './win32-focus'
 
 const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
+
+type PasteTargetProbeReason =
+  | 'ok'
+  | 'unknown'
+  | 'no-foreground-window'
+  | 'no-focused-control'
+  | 'focused-control-without-caret'
+
+export interface PasteTargetProbe {
+  ok: boolean
+  reason: PasteTargetProbeReason
+  source?: 'win32-gui' | 'win32-uia'
+  detail?: string
+  refineOutcome?: 'writable' | 'non-writable' | 'error'
+}
 
 // 将文字输入到目标窗口（剪贴板粘贴方式）
 export async function typeText(text: string): Promise<void> {
@@ -91,6 +107,158 @@ export async function pasteClipboard(): Promise<void> {
     win32Focus.win32PasteClipboard()
   } else {
     await execAsync('xdotool key ctrl+v')
+  }
+}
+
+/**
+ * 仅在 Windows 上做可写焦点探测：
+ * - 前台无窗口 / 无焦点控件 / 无 caret 时认为当前不可粘贴
+ * - 其他平台暂不做底层探测，返回 unknown 由主流程继续尝试
+ */
+export function probePasteTarget(): PasteTargetProbe {
+  if (process.platform !== 'win32') {
+    return { ok: true, reason: 'unknown' }
+  }
+  const probe = win32Focus.probeWin32TextInputState()
+  if (probe.likelyWritable) {
+    return { ok: true, reason: 'ok', source: 'win32-gui' }
+  }
+  return { ok: false, reason: probe.reason, source: 'win32-gui' }
+}
+
+// Win32 某些控件（尤其 Chromium/WebView）不会稳定暴露 caret。
+// 当 GUIThreadInfo 判定为 focused-control-without-caret 时，再用 UIA 复核一次可写性。
+const UIA_FOCUS_WRITABLE_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+try {
+  Add-Type -AssemblyName UIAutomationClient | Out-Null
+  $el = [System.Windows.Automation.AutomationElement]::FocusedElement
+  if ($null -eq $el) {
+    @{ writable = $false; reason = 'no-focused-element' } | ConvertTo-Json -Compress
+    exit 0
+  }
+
+  $valuePatternObj = $null
+  $textPatternObj = $null
+
+  $hasValue = $el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$valuePatternObj)
+  $hasText = $el.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$textPatternObj)
+
+  $readOnly = $false
+  if ($hasValue -and $valuePatternObj -ne $null) {
+    try { $readOnly = [bool]$valuePatternObj.Current.IsReadOnly } catch { }
+  }
+
+  $isEnabled = [bool]$el.Current.IsEnabled
+  $isFocusable = [bool]$el.Current.IsKeyboardFocusable
+  $controlType = [string]$el.Current.ControlType.ProgrammaticName
+  $writable = $isEnabled -and $isFocusable -and ((($hasValue -or $hasText) -and (-not $readOnly)) -or ($hasText -and $isEnabled))
+  $reason = if ($writable) { 'uia-writable' } else { 'uia-non-writable' }
+
+  @{
+    writable = [bool]$writable
+    reason = $reason
+    hasValue = [bool]$hasValue
+    hasText = [bool]$hasText
+    readOnly = [bool]$readOnly
+    isEnabled = [bool]$isEnabled
+    isFocusable = [bool]$isFocusable
+    controlType = $controlType
+  } | ConvertTo-Json -Compress
+} catch {
+  @{
+    writable = $false
+    reason = 'uia-error'
+    error = $_.Exception.Message
+  } | ConvertTo-Json -Compress
+  exit 0
+}
+`
+
+function toPowerShellEncodedCommand(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64')
+}
+
+function stringifyStdout(value: string | Buffer | undefined): string {
+  if (typeof value === 'string') return value
+  if (Buffer.isBuffer(value)) return value.toString('utf8')
+  return ''
+}
+
+function parseUiAutomationProbeResult(raw: string): {
+  writable?: boolean
+  reason?: string
+  hasValue?: boolean
+  hasText?: boolean
+  readOnly?: boolean
+  isEnabled?: boolean
+  isFocusable?: boolean
+  controlType?: string
+  error?: string
+} | null {
+  try {
+    const text = raw.replace(/^\uFEFF/, '').trim()
+    if (!text) return null
+    return JSON.parse(text) as {
+      writable?: boolean
+      reason?: string
+      hasValue?: boolean
+      hasText?: boolean
+      readOnly?: boolean
+      isEnabled?: boolean
+      isFocusable?: boolean
+      controlType?: string
+      error?: string
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function refinePasteTargetProbe(probe: PasteTargetProbe): Promise<PasteTargetProbe> {
+  if (process.platform !== 'win32') return probe
+  if (probe.ok || probe.reason !== 'focused-control-without-caret') return probe
+
+  try {
+    const encoded = toPowerShellEncodedCommand(UIA_FOCUS_WRITABLE_SCRIPT)
+    const { stdout } = await execFileAsync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+      { timeout: 900, windowsHide: true, maxBuffer: 128 * 1024 },
+    )
+    const parsed = parseUiAutomationProbeResult(stringifyStdout(stdout))
+    if (!parsed) {
+      return { ...probe, source: 'win32-uia', detail: 'uia-empty-result', refineOutcome: 'error' }
+    }
+
+    const summary = [
+      `reason=${parsed.reason ?? 'unknown'}`,
+      `type=${parsed.controlType ?? 'unknown'}`,
+      `value=${String(parsed.hasValue)}`,
+      `text=${String(parsed.hasText)}`,
+      `ro=${String(parsed.readOnly)}`,
+      `en=${String(parsed.isEnabled)}`,
+      `focusable=${String(parsed.isFocusable)}`,
+      `err=${parsed.error ? parsed.error.replace(/\s+/g, ' ').slice(0, 120) : ''}`,
+    ].join(',')
+
+    if (parsed.writable === true) {
+      return { ok: true, reason: 'ok', source: 'win32-uia', detail: summary, refineOutcome: 'writable' }
+    }
+    if (parsed.reason === 'uia-non-writable' || parsed.reason === 'no-focused-element') {
+      return { ok: false, reason: 'no-focused-control', source: 'win32-uia', detail: summary, refineOutcome: 'non-writable' }
+    }
+    if (parsed.reason === 'uia-error') {
+      return { ...probe, source: 'win32-uia', detail: summary, refineOutcome: 'error' }
+    }
+    return { ...probe, source: 'win32-uia', detail: summary }
+  } catch (error) {
+    return {
+      ...probe,
+      source: 'win32-uia',
+      detail: `uia-exec-error:${error instanceof Error ? error.message : String(error)}`,
+      refineOutcome: 'error',
+    }
   }
 }
 

@@ -1,10 +1,27 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as win32Focus from '../../electron/main/win32-focus'
 import { isSelfAppId } from '../../electron/main/self-app'
 
 describe('isSelfAppId', () => {
-  it('在非 macOS 平台总是 false', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('Windows 上句柄 PID 等于当前进程时返回 true', () => {
+    vi.spyOn(win32Focus, 'getWin32WindowProcessId').mockReturnValue(process.pid)
     const appLike = { getName: () => 'Logene Voice Input' }
-    expect(isSelfAppId('com.logene.voice-input', 'win32', appLike)).toBe(false)
+    expect(isSelfAppId('123456', 'win32', appLike)).toBe(true)
+  })
+
+  it('Windows 上句柄 PID 不一致时返回 false', () => {
+    vi.spyOn(win32Focus, 'getWin32WindowProcessId').mockReturnValue(process.pid + 1000)
+    const appLike = { getName: () => 'Logene Voice Input' }
+    expect(isSelfAppId('123456', 'win32', appLike)).toBe(false)
+  })
+
+  it('非 macOS/Windows 平台返回 false', () => {
+    const appLike = { getName: () => 'Logene Voice Input' }
+    expect(isSelfAppId('com.logene.voice-input', 'linux', appLike)).toBe(false)
   })
 
   it('命中已知 self appId 时返回 true', () => {

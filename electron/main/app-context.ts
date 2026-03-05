@@ -12,7 +12,7 @@ export let permissionCheckInFlight = false
 export let hotkeysRegistered = false
 export let lastPermissionCheckAt = 0
 
-export const FLOAT_WIDTH = 116
+export const FLOAT_WIDTH = 124
 export const FLOAT_HEIGHT = 100
 export const VAD_TOGGLE_HOTKEY = 'Alt+Shift+V'
 export const PERMISSION_CHECK_INTERVAL_MS = 30_000

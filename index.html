@@ -15,6 +15,7 @@
     <div id="float-capsule-view" class="view active">
       <div class="capsule-container">
         <button id="record-btn" class="capsule-btn" title="点击录音 / Alt+E 按住 / 双击或右键打开配置">
+          <span class="init-spinner" aria-hidden="true"></span>
           <div class="idle-dots">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
           </div>
@@ -30,6 +31,14 @@
           </svg>
         </button>
         <span id="status-text" class="status-text">就绪</span>
+      </div>
+      <div id="float-fallback-panel" class="float-fallback-panel" hidden>
+        <div id="float-fallback-hint" class="float-fallback-hint">未检测到可写焦点，已暂存识别结果</div>
+        <div id="float-fallback-text" class="float-fallback-text" title=""></div>
+        <div class="float-fallback-actions">
+          <button id="float-fallback-copy-btn" class="float-fallback-btn" type="button">复制</button>
+          <button id="float-fallback-close-btn" class="float-fallback-btn" type="button">收起</button>
+        </div>
       </div>
       <div id="error-bar" class="error-bar"></div>
     </div>

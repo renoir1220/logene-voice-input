@@ -36,7 +36,6 @@ let vadSyncVersion = 0
 export function getState(): RecordState { return state }
 export function getStartCapturePromise() { return startCapturePromise }
 export function setStartCapturePromise(p: Promise<void> | null) { startCapturePromise = p }
-export function getFocusSnapshotAppId() { return focusSnapshotAppId }
 
 export function initFloatElements() {
   recordBtn = document.getElementById('record-btn') as HTMLButtonElement
@@ -75,12 +74,19 @@ export async function captureFocusSnapshot(reason: string): Promise<string | nul
 
 export function setState(newState: RecordState | string, text?: string) {
   state = newState as RecordState
-  recordBtn?.classList.remove('recording', 'recognizing', 'success')
+  recordBtn?.classList.remove('initializing', 'recording', 'recognizing', 'success')
 
   switch (newState) {
     case 'idle':
       if (statusText) {
         statusText.textContent = text || '就绪'
+        statusText.classList.remove('result', 'command')
+      }
+      break
+    case 'initializing':
+      recordBtn?.classList.add('initializing')
+      if (statusText) {
+        statusText.textContent = text || '初始化中...'
         statusText.classList.remove('result', 'command')
       }
       break
@@ -171,11 +177,12 @@ function flashSuccessState() {
 
 export function applyAsrRuntimeStatus(status: AsrRuntimeStatus) {
   asrRuntimeStatus = status
-  if (state !== 'idle') return
+  if (state !== 'idle' && state !== 'initializing') return
 
   if (status.phase === 'starting') {
     const suffix = status.progress > 0 ? ` (${status.progress}%)` : ''
-    setState('idle', `正在启动${suffix}`)
+    setState('initializing', `正在启动${suffix}`)
+    hideError()
     return
   }
 
@@ -192,6 +199,12 @@ export function applyAsrRuntimeStatus(status: AsrRuntimeStatus) {
   lastAsrRuntimeError = ''
   if (status.phase === 'ready') {
     setState('idle', '就绪')
+    hideError()
+    return
+  }
+  if (status.phase === 'idle') {
+    setState('idle', '就绪')
+    hideError()
   }
 }
 
@@ -214,11 +227,19 @@ export async function ensureAsrReadyBeforeCapture(): Promise<boolean> {
   }
   if ((cfg.asr?.mode ?? 'api') !== 'local') return true
 
+  if (asrRuntimeStatus.phase === 'error') {
+    const msg = asrRuntimeStatus.message || '本地识别启动失败'
+    setState('idle', '启动失败')
+    showError(`本地识别启动失败：${msg}`)
+    return false
+  }
+
   if (asrRuntimeStatus.phase !== 'ready') {
     const suffix = asrRuntimeStatus.progress > 0 ? ` (${asrRuntimeStatus.progress}%)` : ''
     const msg = asrRuntimeStatus.message || `本地识别正在启动${suffix}`
-    setState('idle', `正在启动${suffix}`)
-    showError(msg)
+    setState('initializing', `正在启动${suffix}`)
+    hideError()
+    uiTrace('asr.not-ready', { phase: asrRuntimeStatus.phase, message: msg })
     return false
   }
   return true
@@ -281,18 +302,15 @@ export async function onRecordClick() {
         startCapturePromise = null
       }
       const wav = await stopCapture()
-      console.log('[识别] 发送 WAV 到主进程，大小:', wav.byteLength)
       const prevAppId = focusSnapshotAppId
       focusSnapshotAppId = null
       uiTrace('record-click.stop-capture.begin-recognize', { wavBytes: wav.byteLength, prevAppId })
       const result = await window.electronAPI.recognizeWav(wav, prevAppId)
-      console.log('[识别] 结果:', result)
       uiTrace('record-click.stop-capture.result', { result })
       setState('idle')
       if (result) showResult(result)
       else setState('idle')
     } catch (e) {
-      console.error('[识别] 失败:', e)
       setState('idle')
       focusSnapshotAppId = null
       uiTrace('record-click.stop-capture.error', { error: String(e) })

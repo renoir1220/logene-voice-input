@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('recognize-wav', wavBuffer, prevAppId),
   getWindowPosition: () => ipcRenderer.invoke('get-window-position'),
   setWindowPosition: (x: number, y: number) => ipcRenderer.invoke('set-window-position', x, y),
+  setFloatExpanded: (expanded: boolean) => ipcRenderer.invoke('set-float-expanded', expanded),
+  retryFloatPaste: (text: string, targetAppId: string | null) =>
+    ipcRenderer.invoke('retry-float-paste', text, targetAppId),
   setIgnoreMouseEvents: (ignore: boolean, opts?: { forward: boolean }) =>
     ipcRenderer.invoke('set-ignore-mouse-events', ignore, opts),
 
@@ -89,6 +92,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onPermissionWarning: (cb: (message: string) => void) => {
     ipcRenderer.on('permission-warning', (_e, message) => cb(String(message || '')))
+  },
+  onFloatPasteFallback: (cb: (payload: {
+    requestId: number
+    text: string
+    targetAppId: string | null
+    reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
+    precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
+  }) => void) => {
+    ipcRenderer.on('float-paste-fallback', (_e, payload) => cb(payload))
   },
   // 重写界面事件
   onInitRewrite: (cb: (text: string) => void) => {

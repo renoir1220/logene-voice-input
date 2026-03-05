@@ -126,7 +126,27 @@ function createWindow() {
   if (process.platform === 'darwin') {
     win.setFocusable(false)
   }
-  win.setAlwaysOnTop(true, 'floating', 1)
+  const enforceTopmost = (reason: string) => {
+    if (win.isDestroyed()) return
+    const level = process.platform === 'win32' ? 'screen-saver' : 'floating'
+    win.setAlwaysOnTop(true, level, 1)
+    if (process.platform === 'win32' && win.isVisible()) {
+      win.moveTop()
+    }
+    if (reason === 'watchdog' && win.isAlwaysOnTop()) return
+    logger.info(`[Window] enforce-topmost reason=${reason}`)
+  }
+  enforceTopmost('create')
+  const topmostWatchdog = setInterval(() => {
+    if (win.isDestroyed() || !win.isVisible()) return
+    if (!win.isAlwaysOnTop()) {
+      logger.warn('[Window] 检测到浮球掉出置顶层，立即恢复')
+    }
+    enforceTopmost('watchdog')
+  }, 1500)
+  win.on('show', () => enforceTopmost('show'))
+  win.on('blur', () => enforceTopmost('blur'))
+  win.on('focus', () => enforceTopmost('focus'))
   win.once('ready-to-show', () => {
     logger.info('[Window] ready-to-show')
   })
@@ -134,7 +154,10 @@ function createWindow() {
     logger.info('[Window] did-finish-load')
     emitAsrRuntimeStatus()
   })
-  win.on('closed', () => { setMainWindow(null) })
+  win.on('closed', () => {
+    clearInterval(topmostWatchdog)
+    setMainWindow(null)
+  })
 }
 
 // ── 系统托盘 ──

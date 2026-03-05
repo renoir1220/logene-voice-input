@@ -1,7 +1,7 @@
 /* ── 视图 1：极致微型球浮窗 (Micro-Orb) ── */
 #float-capsule-view {
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: stretch;
   position: relative;
 }
 
@@ -21,6 +21,10 @@
   padding: 3px 7px;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: auto;
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
 }
 
 .capsule-container:hover {
@@ -43,6 +47,27 @@
   position: relative;
   overflow: hidden;
   min-width: 0;
+}
+
+.init-spinner {
+  display: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #cbd5e1;
+  border-top-color: #0ea5e9;
+  animation: init-spin 0.75s linear infinite;
+}
+
+/* 图标层透传事件，确保右键/点击都由按钮本体统一处理。 */
+.capsule-btn .idle-dots,
+.capsule-btn .wave-bars,
+.capsule-btn .init-spinner,
+.capsule-btn .dot,
+.capsule-btn .bar,
+.vad-toggle-btn svg,
+.vad-toggle-btn svg * {
+  pointer-events: none;
 }
 
 .capsule-btn:hover {
@@ -212,6 +237,15 @@
   animation-delay: 0.3s;
 }
 
+.capsule-btn.initializing .idle-dots,
+.capsule-btn.initializing .wave-bars {
+  display: none;
+}
+
+.capsule-btn.initializing .init-spinner {
+  display: inline-block;
+}
+
 @keyframes recognize-glint {
   0%,
   100% {
@@ -293,9 +327,8 @@
 .error-bar {
   display: none;
   position: absolute;
-  bottom: -28px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 8px;
+  bottom: 50px;
   background: rgba(239, 68, 68, 0.92);
   color: #fff;
   font-size: 11px;
@@ -311,12 +344,76 @@
   z-index: 100;
 }
 
+@keyframes init-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .error-bar.visible {
   display: block;
   animation: error-fade-in 0.2s ease-out;
 }
 
 @keyframes error-fade-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.float-fallback-panel {
+  position: absolute;
+  right: 8px;
+  bottom: 56px;
+  width: 260px;
+  padding: 10px 10px 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.float-fallback-hint {
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.float-fallback-text {
+  margin-top: 6px;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: rgba(248, 250, 252, 0.95);
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 84px;
+  overflow: auto;
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.float-fallback-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.float-fallback-btn {
+  flex: 1;
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  background: rgba(255, 255, 255, 0.92);
+  color: #334155;
+  font-size: 11px;
+  cursor: pointer;
 }
