@@ -177,12 +177,16 @@ export function setupIpc(
   const hasRefineError = (probe: { refineOutcome?: 'writable' | 'non-writable' | 'error' }) => (
     probe.refineOutcome === 'error'
   )
-  // 读取多次焦点探测，降低短时切换/恢复过程中的瞬时误判。
+  // 探测策略：
+  // - 明确无焦点/不可写时不重试，直接返回，避免无意义等待拉长识别路径。
+  // - 仅在 UIA 复核异常时做少量重试，吸收瞬时系统抖动。
   const probePasteTargetStable = async (stage: 'before' | 'after') => {
     let last = await readPasteTargetProbe()
-    for (let i = 2; i <= 5; i += 1) {
-      if (last.ok || (!isHardNoFocusReason(last.reason) && !hasRefineError(last))) break
-      await sleep(stage === 'before' ? 45 : 35)
+    for (let i = 2; i <= 3; i += 1) {
+      if (last.ok) return last
+      if (isHardNoFocusReason(last.reason)) return last
+      if (!hasRefineError(last)) return last
+      await sleep(stage === 'before' ? 25 : 20)
       last = await readPasteTargetProbe()
     }
     return last

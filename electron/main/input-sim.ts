@@ -224,7 +224,7 @@ export async function refinePasteTargetProbe(probe: PasteTargetProbe): Promise<P
     const { stdout } = await execFileAsync(
       'powershell',
       ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
-      { timeout: 900, windowsHide: true, maxBuffer: 128 * 1024 },
+      { timeout: 320, windowsHide: true, maxBuffer: 128 * 1024 },
     )
     const parsed = parseUiAutomationProbeResult(stringifyStdout(stdout))
     if (!parsed) {
