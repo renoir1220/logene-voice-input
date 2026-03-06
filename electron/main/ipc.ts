@@ -20,6 +20,7 @@ import {
   floatPos,
   setFloatPos,
   FLOAT_WIDTH,
+  FLOAT_HEIGHT,
   DEFAULT_LOCAL_MODEL_ID,
   stringifyErrorLike,
   attachWebContentsDiagnostics,
