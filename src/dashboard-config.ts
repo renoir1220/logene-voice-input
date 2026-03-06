@@ -541,6 +541,7 @@ export async function loadConfigToForm() {
     ;(document.getElementById('cfg-hotkey') as HTMLInputElement).value = normalizeHotkey(cfg.hotkey?.record || '')
     ;(document.getElementById('cfg-clipboard') as HTMLInputElement).checked = cfg.input?.useClipboard || false
     ;(document.getElementById('cfg-log-debug-enabled') as HTMLInputElement).checked = cfg.logging?.enableDebug || false
+    ;(document.getElementById('cfg-float-bounds-debug') as HTMLInputElement).checked = cfg.logging?.showFloatBounds || false
     ;(document.getElementById('cfg-vad') as HTMLInputElement).checked = cfg.vad?.enabled || false
     ;(document.getElementById('dashboard-vad-toggle') as HTMLInputElement).checked = cfg.vad?.enabled || false
     const threshold = cfg.vad?.speechThreshold ?? 0.06
@@ -588,6 +589,7 @@ export async function saveConfig() {
     cfg.logging = {
       ...cfg.logging,
       enableDebug: (document.getElementById('cfg-log-debug-enabled') as HTMLInputElement).checked,
+      showFloatBounds: (document.getElementById('cfg-float-bounds-debug') as HTMLInputElement).checked,
     }
     const asrMode = (document.getElementById('asr-mode-local') as HTMLInputElement).checked ? 'local' : 'api'
     cfg.asr = {

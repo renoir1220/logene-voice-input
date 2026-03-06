@@ -1,4 +1,5 @@
 import type { app as ElectronApp } from 'electron'
+import { getWin32WindowProcessId } from './win32-focus'
 
 type AppLike = Pick<typeof ElectronApp, 'getName'> & {
   getBundleID?: () => string
@@ -16,6 +17,10 @@ export function isSelfAppId(
   electronApp: AppLike,
 ): boolean {
   if (!appId) return false
+  if (platform === 'win32') {
+    const pid = getWin32WindowProcessId(appId)
+    return typeof pid === 'number' && pid === process.pid
+  }
   if (platform !== 'darwin') return false
 
   if (KNOWN_SELF_APP_IDS.has(appId)) return true

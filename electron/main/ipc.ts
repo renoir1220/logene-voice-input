@@ -1,4 +1,4 @@
-import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent, app, Menu } from 'electron'
+import { ipcMain, clipboard, BrowserWindow, IpcMainInvokeEvent, app, Menu, screen } from 'electron'
 import * as path from 'path'
 import { getConfig, saveConfig, AppConfig } from './config'
 import { recognize } from './asr'
@@ -6,7 +6,7 @@ import { recognizeLocal, initLocalRecognizer, disposeLocalRecognizer } from './l
 import { getModelInfoList, inspectLocalModelStatus, deleteModelCache } from './model-manager'
 import { logger, getLogBuffer, clearLogs } from './logger'
 import { matchVoiceCommand } from './voice-commands'
-import { typeText, sendShortcut } from './input-sim'
+import { typeText, sendShortcut, probePasteTarget, refinePasteTargetProbe } from './input-sim'
 import { normalizeAsrText, applyTextRules } from './asr-text'
 import { optimizeAsrTextWithLlm, generateDailySummary } from './llm-service'
 import { FocusController } from './focus-controller'
@@ -20,6 +20,7 @@ import {
   floatPos,
   setFloatPos,
   FLOAT_WIDTH,
+  FLOAT_HEIGHT,
   DEFAULT_LOCAL_MODEL_ID,
   stringifyErrorLike,
   attachWebContentsDiagnostics,
@@ -32,6 +33,21 @@ interface AsrRuntimeStatus {
   progress: number
   message: string
   updatedAt: string
+}
+
+interface FloatPasteFallbackPayload {
+  requestId: number
+  text: string
+  targetAppId: string | null
+  reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
+  precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
+}
+
+interface FloatLayoutMetrics {
+  width: number
+  height: number
+  anchorX: number
+  anchorY: number
 }
 
 let asrRuntimeStatus: AsrRuntimeStatus = {
@@ -153,7 +169,40 @@ export function setupIpc(
   updateTrayMenu: () => void,
 ) {
   const config = getConfig()
+  let floatExpanded = false
+  let floatLayout: FloatLayoutMetrics = {
+    width: FLOAT_WIDTH,
+    height: FLOAT_HEIGHT,
+    anchorX: 0,
+    anchorY: 0,
+  }
   // vadEnabled is set externally via app-context
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+  const isHardNoFocusReason = (reason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret') => (
+    reason === 'no-foreground-window' || reason === 'no-focused-control'
+  )
+  const readPasteTargetProbe = async () => {
+    const baseProbe = probePasteTarget()
+    return refinePasteTargetProbe(baseProbe)
+  }
+  const hasRefineError = (probe: { refineOutcome?: 'writable' | 'non-writable' | 'error' }) => (
+    probe.refineOutcome === 'error'
+  )
+  // 探测策略：
+  // - 明确无焦点/不可写时不重试，直接返回，避免无意义等待拉长识别路径。
+  // - 仅在 UIA 复核异常时做少量重试，吸收瞬时系统抖动。
+  const probePasteTargetStable = async (stage: 'before' | 'after') => {
+    let last = await readPasteTargetProbe()
+    for (let i = 2; i <= 3; i += 1) {
+      if (last.ok) return last
+      if (isHardNoFocusReason(last.reason)) return last
+      if (!hasRefineError(last)) return last
+      await sleep(stage === 'before' ? 25 : 20)
+      last = await readPasteTargetProbe()
+    }
+    return last
+  }
 
   const handle = (
     channel: string,
@@ -167,6 +216,78 @@ export function setupIpc(
         throw e
       }
     })
+  }
+
+  function normalizeFloatLayout(layout: FloatLayoutMetrics): FloatLayoutMetrics {
+    const width = Math.max(FLOAT_WIDTH, Math.round(layout.width || 0))
+    const height = Math.max(FLOAT_HEIGHT, Math.round(layout.height || 0))
+    const anchorX = Math.max(0, Math.min(width - 1, Math.round(layout.anchorX || 0)))
+    const anchorY = Math.max(0, Math.min(height - 1, Math.round(layout.anchorY || 0)))
+    return { width, height, anchorX, anchorY }
+  }
+
+  function applyFloatLayout(layout: FloatLayoutMetrics, reason = 'unknown') {
+    const win = mainWindow
+    if (!win || win.isDestroyed()) {
+      logger.warn(`[Float] layout skipped reason=${reason} win-unavailable`)
+      return
+    }
+
+    const nextLayout = normalizeFloatLayout(layout)
+    const oldBounds = win.getBounds()
+    const anchorScreenX = oldBounds.x + floatLayout.anchorX
+    const anchorScreenY = oldBounds.y + floatLayout.anchorY
+    let nextX = anchorScreenX - nextLayout.anchorX
+    let nextY = anchorScreenY - nextLayout.anchorY
+
+    const display = screen.getDisplayMatching(oldBounds)
+    const area = display.workArea
+    nextX = Math.max(area.x, Math.min(nextX, area.x + area.width - nextLayout.width))
+    nextY = Math.max(area.y, Math.min(nextY, area.y + area.height - nextLayout.height))
+
+    const roundedBounds = {
+      x: Math.round(nextX),
+      y: Math.round(nextY),
+      width: nextLayout.width,
+      height: nextLayout.height,
+    }
+    const changed = roundedBounds.x !== oldBounds.x
+      || roundedBounds.y !== oldBounds.y
+      || roundedBounds.width !== oldBounds.width
+      || roundedBounds.height !== oldBounds.height
+    if (changed) {
+      win.setBounds(roundedBounds, false)
+    }
+    const newBounds = win.getBounds()
+
+    if (process.platform === 'win32') {
+      win.setAlwaysOnTop(true, 'screen-saver', 1)
+      win.moveTop()
+    } else {
+      win.setAlwaysOnTop(true, 'floating', 1)
+    }
+    floatLayout = nextLayout
+    setFloatPos({
+      x: newBounds.x + nextLayout.anchorX,
+      y: newBounds.y + nextLayout.anchorY,
+    })
+    const scaleFactor = display.scaleFactor
+    logger.info(
+      `[Float] layout reason=${reason} expanded=${floatExpanded} ` +
+      `old=(${oldBounds.x},${oldBounds.y},${oldBounds.width},${oldBounds.height}) ` +
+      `new=(${newBounds.x},${newBounds.y},${newBounds.width},${newBounds.height}) ` +
+      `anchor=(${nextLayout.anchorX},${nextLayout.anchorY}) ` +
+      `workArea=(${area.x},${area.y},${area.width},${area.height}) scale=${scaleFactor}`,
+    )
+  }
+
+  function emitFloatPasteFallback(payload: FloatPasteFallbackPayload) {
+    logger.warn(
+      `[FloatFallback] emit req=${payload.requestId} reason=${payload.reason} ` +
+      `precheck=${payload.precheckReason} target=${payload.targetAppId ?? 'null'} textLen=${payload.text.length}`,
+    )
+    floatExpanded = true
+    mainWindow?.webContents.send('float-paste-fallback', payload)
   }
 
   handle('get-config', () => getConfig())
@@ -240,6 +361,7 @@ export function setupIpc(
     const syncedVadThreshold = clampVadThreshold(merged.vad?.speechThreshold)
     mainWindow?.webContents.send('vad-threshold-updated', syncedVadThreshold)
     dashboardWindow?.webContents.send('vad-threshold-updated', syncedVadThreshold)
+    mainWindow?.webContents.send('float-debug-bounds-updated', Boolean(merged.logging?.showFloatBounds))
     updateTrayMenu()
     if ((merged.asr?.mode ?? 'api') === 'local') {
       void ensureLocalRecognizerReady('config-save').catch(() => { })
@@ -438,21 +560,11 @@ export function setupIpc(
 
     const result = matchVoiceCommand(text, cfg.voiceCommands)
     const fallbackTarget = focusController.getLastExternalAppId()
-    const focusTarget = prevAppId || fallbackTarget
-    // Windows 上 isSelfAppId 始终返回 false，跳过 PowerShell 调用直接尝试还原焦点
-    const selfFrontmost = process.platform !== 'win32'
-      ? await focusController.isSelfAppFrontmost(`asr#${reqId}`)
-      : false
-    if (selfFrontmost) {
-      logger.debug(
-        `[ASR#${reqId}] skip restore because self app is frontmost prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'}`,
-      )
-    } else {
-      logger.debug(
-        `[ASR#${reqId}] focus target prev=${prevAppId ?? 'null'} lastExternal=${fallbackTarget ?? 'null'} chosen=${focusTarget ?? 'null'}`,
-      )
-      await focusController.restore(focusTarget, `asr#${reqId}`)
+    let focusTarget = prevAppId || fallbackTarget
+    if (!focusTarget) {
+      focusTarget = await focusController.captureSnapshot(`asr#${reqId}-pre-restore`)
     }
+    await focusController.restore(focusTarget, `asr#${reqId}`)
 
     if (result.type === 'command') {
       logger.info(`[ASR#${reqId}] 语音指令: ${text.trim()} → ${result.shortcut}`)
@@ -486,8 +598,46 @@ export function setupIpc(
         }
       }
 
-      logger.info(`[ASR#${reqId}] 输入文字: ${outputText}`)
-      await typeText(outputText)
+      const pasteTarget = focusTarget || focusController.getLastExternalAppId()
+      const probeBefore = await probePasteTargetStable('before')
+      logger.info(
+        `[ASR#${reqId}] 输入文字: ${outputText} (precheck=${probeBefore.reason}, target=${pasteTarget ?? 'null'})`,
+      )
+      try {
+        await typeText(outputText)
+        logger.info(`[ASR#${reqId}] 粘贴动作已发送（未抛错）`)
+        const probeAfter = await probePasteTargetStable('after')
+        // 仅在“前后都明确不可写/无焦点”时才判定为静默失败。
+        // focused-control-without-caret 属于歧义态，已由 UIA 复核，但仍不作为直接失败信号。
+        const likelySilentFailure = !probeBefore.ok && !probeAfter.ok
+          && isHardNoFocusReason(probeBefore.reason)
+          && isHardNoFocusReason(probeAfter.reason)
+        if (likelySilentFailure) {
+          logger.warn(
+            `[ASR#${reqId}] 粘贴已发送但前后均无可写焦点，触发浮球回显 before=${probeBefore.reason} after=${probeAfter.reason}`,
+          )
+          emitFloatPasteFallback({
+            requestId: reqId,
+            text: outputText,
+            targetAppId: pasteTarget,
+            reason: probeAfter.reason,
+            precheckReason: probeBefore.reason,
+          })
+        } else if (!probeBefore.ok || !probeAfter.ok) {
+          logger.warn(
+            `[ASR#${reqId}] 探测存在歧义，先不弹回显 before=${probeBefore.reason} after=${probeAfter.reason}`,
+          )
+        }
+      } catch (e) {
+        logger.warn(`[ASR#${reqId}] 直接粘贴失败，转浮球回显: ${String(e)}`)
+        emitFloatPasteFallback({
+          requestId: reqId,
+          text: outputText,
+          targetAppId: pasteTarget,
+          reason: 'type-failed',
+          precheckReason: probeBefore.reason,
+        })
+      }
       try {
         insertRecognition({ text: outputText, mode: asrMode, isCommand: false })
         dashboardWindow?.webContents.send('recognition-added')
@@ -584,10 +734,42 @@ export function setupIpc(
   handle('get-window-position', () => mainWindow?.getPosition() || [0, 0])
   handle('set-window-position', (_event, x: number, y: number) => {
     if (mainWindow) {
-      mainWindow.setPosition(Math.round(x), Math.round(y), false)
-      if (mainWindow.getSize()[0] === FLOAT_WIDTH) {
-        setFloatPos({ x: Math.round(x), y: Math.round(y) })
-      }
+      const nextX = Math.round(x)
+      const nextY = Math.round(y)
+      mainWindow.setPosition(nextX, nextY, false)
+      setFloatPos({
+        x: nextX + floatLayout.anchorX,
+        y: nextY + floatLayout.anchorY,
+      })
+    }
+  })
+
+  handle('set-float-expanded', (_event, expanded: boolean) => {
+    floatExpanded = Boolean(expanded)
+  })
+
+  handle('sync-float-layout', (_event, layout: FloatLayoutMetrics) => {
+    applyFloatLayout(layout, 'renderer-layout')
+  })
+
+  handle('retry-float-paste', async (_event, text: string, targetAppId: string | null) => {
+    const output = String(text ?? '')
+    if (!output.trim()) {
+      return { success: false, reason: 'empty-text' }
+    }
+    const fallbackTarget = focusController.getLastExternalAppId()
+    const focusTarget = targetAppId || fallbackTarget
+    await focusController.restore(focusTarget, 'float-retry')
+    const probe = await refinePasteTargetProbe(probePasteTarget())
+    if (!probe.ok) {
+      return { success: false, reason: probe.reason }
+    }
+    try {
+      await typeText(output)
+      return { success: true, reason: 'ok' }
+    } catch (e) {
+      logger.warn(`[Float] retry paste failed: ${String(e)}`)
+      return { success: false, reason: 'type-failed' }
     }
   })
 

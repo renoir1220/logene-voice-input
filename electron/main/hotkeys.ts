@@ -128,7 +128,6 @@ export function registerHotkey(
     if (e.keycode === parsed.keycode) {
       if (hasModifierPressed) {
         awaitingModifierRelease = true
-        logger.debug('[热键] 主键已松开，等待修饰键释放')
         return
       }
       stopRecording()
@@ -155,7 +154,7 @@ export function registerHotkey(
       // 先通知渲染进程，再异步获取焦点快照
       mainWindow?.webContents.send('hotkey-state', 'recording')
       prevApp = await focusController.captureSnapshot('hotkey-shortcut-fallback')
-      console.log('[热键/拦截网] 捕获按下，开始录音，前台应用:', prevApp)
+      logger.info(`[热键/拦截网] 捕获按下，开始录音，前台应用: ${prevApp ?? 'null'}`)
     }
   })
 

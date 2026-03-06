@@ -120,6 +120,7 @@ export interface LlmConfig {
 
 export interface LoggingConfig {
   enableDebug: boolean
+  showFloatBounds: boolean
 }
 
 export interface AudioInputConstraintsConfig {
@@ -255,6 +256,7 @@ const defaultConfig: AppConfig = {
   },
   logging: {
     enableDebug: false,
+    showFloatBounds: false,
   },
 }
 
@@ -289,6 +291,9 @@ export function getConfig(): AppConfig {
   if (typeof cfg.logging.enableDebug !== 'boolean') {
     cfg.logging.enableDebug = false
   }
+  if (typeof cfg.logging.showFloatBounds !== 'boolean') {
+    cfg.logging.showFloatBounds = false
+  }
   if (!cfg.hotkey || typeof cfg.hotkey !== 'object') {
     cfg.hotkey = { ...defaultConfig.hotkey }
   }
@@ -318,6 +323,9 @@ export function saveConfig(config: AppConfig): void {
   }
   if (typeof config.logging.enableDebug !== 'boolean') {
     config.logging.enableDebug = false
+  }
+  if (typeof config.logging.showFloatBounds !== 'boolean') {
+    config.logging.showFloatBounds = false
   }
   if (!config.hotkey || typeof config.hotkey !== 'object') {
     config.hotkey = { ...defaultConfig.hotkey }
