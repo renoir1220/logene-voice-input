@@ -6,12 +6,13 @@ import { recognizeLocal, initLocalRecognizer, disposeLocalRecognizer } from './l
 import { getModelInfoList, inspectLocalModelStatus, deleteModelCache } from './model-manager'
 import { logger, getLogBuffer, clearLogs } from './logger'
 import { matchVoiceCommand } from './voice-commands'
-import { typeText, sendShortcut, probePasteTarget, refinePasteTargetProbe } from './input-sim'
+import { typeText, sendShortcut, assessPasteTarget } from './input-sim'
 import { normalizeAsrText, applyTextRules } from './asr-text'
 import { optimizeAsrTextWithLlm, generateDailySummary } from './llm-service'
 import { FocusController } from './focus-controller'
 import { checkPermissionsAndGuide } from './permissions'
 import { insertRecognition, getStats, getRecentHistory, getAllHistory, getRecordsByDate } from './db'
+import { buildPasteExecutionPlan, type FloatPasteFallbackReason } from './paste-plan'
 import {
   mainWindow,
   dashboardWindow,
@@ -39,7 +40,7 @@ interface FloatPasteFallbackPayload {
   requestId: number
   text: string
   targetAppId: string | null
-  reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
+  reason: FloatPasteFallbackReason
   precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
 }
 
@@ -177,32 +178,6 @@ export function setupIpc(
     anchorY: 0,
   }
   // vadEnabled is set externally via app-context
-
-  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-  const isHardNoFocusReason = (reason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret') => (
-    reason === 'no-foreground-window' || reason === 'no-focused-control'
-  )
-  const readPasteTargetProbe = async () => {
-    const baseProbe = probePasteTarget()
-    return refinePasteTargetProbe(baseProbe)
-  }
-  const hasRefineError = (probe: { refineOutcome?: 'writable' | 'non-writable' | 'error' }) => (
-    probe.refineOutcome === 'error'
-  )
-  // 探测策略：
-  // - 明确无焦点/不可写时不重试，直接返回，避免无意义等待拉长识别路径。
-  // - 仅在 UIA 复核异常时做少量重试，吸收瞬时系统抖动。
-  const probePasteTargetStable = async (stage: 'before' | 'after') => {
-    let last = await readPasteTargetProbe()
-    for (let i = 2; i <= 3; i += 1) {
-      if (last.ok) return last
-      if (isHardNoFocusReason(last.reason)) return last
-      if (!hasRefineError(last)) return last
-      await sleep(stage === 'before' ? 25 : 20)
-      last = await readPasteTargetProbe()
-    }
-    return last
-  }
 
   const handle = (
     channel: string,
@@ -564,9 +539,9 @@ export function setupIpc(
     if (!focusTarget) {
       focusTarget = await focusController.captureSnapshot(`asr#${reqId}-pre-restore`)
     }
-    await focusController.restore(focusTarget, `asr#${reqId}`)
+      const restoreResult = await focusController.restore(focusTarget, `asr#${reqId}`)
 
-    if (result.type === 'command') {
+      if (result.type === 'command') {
       logger.info(`[ASR#${reqId}] 语音指令: ${text.trim()} → ${result.shortcut}`)
       await sendShortcut(result.shortcut)
       try {
@@ -599,44 +574,61 @@ export function setupIpc(
       }
 
       const pasteTarget = focusTarget || focusController.getLastExternalAppId()
-      const probeBefore = await probePasteTargetStable('before')
-      logger.info(
-        `[ASR#${reqId}] 输入文字: ${outputText} (precheck=${probeBefore.reason}, target=${pasteTarget ?? 'null'})`,
-      )
-      try {
-        await typeText(outputText)
-        logger.info(`[ASR#${reqId}] 粘贴动作已发送（未抛错）`)
-        const probeAfter = await probePasteTargetStable('after')
-        // 仅在“前后都明确不可写/无焦点”时才判定为静默失败。
-        // focused-control-without-caret 属于歧义态，已由 UIA 复核，但仍不作为直接失败信号。
-        const likelySilentFailure = !probeBefore.ok && !probeAfter.ok
-          && isHardNoFocusReason(probeBefore.reason)
-          && isHardNoFocusReason(probeAfter.reason)
-        if (likelySilentFailure) {
+      if (!restoreResult.success) {
+        logger.warn(
+          `[ASR#${reqId}] 目标应用焦点恢复失败，直接触发浮球回显 ` +
+          `restore=${restoreResult.reason} final=${restoreResult.finalFrontmostAppId ?? 'null'}`,
+        )
+        emitFloatPasteFallback({
+          requestId: reqId,
+          text: outputText,
+          targetAppId: pasteTarget,
+          reason: 'restore-failed',
+          precheckReason: 'unknown',
+        })
+      } else {
+        const targetAssessment = await assessPasteTarget({ maxAttempts: 2, retryDelayMs: 25 })
+        const pastePlan = buildPasteExecutionPlan(restoreResult, targetAssessment)
+        logger.info(
+          `[ASR#${reqId}] 输入文字: ${outputText} ` +
+          `(restore=${restoreResult.reason}/${restoreResult.success ? 'ok' : 'fail'}, ` +
+          `precheck=${targetAssessment.reason}, readiness=${targetAssessment.status}, target=${pasteTarget ?? 'null'})`,
+        )
+        if (pastePlan.action === 'fallback') {
           logger.warn(
-            `[ASR#${reqId}] 粘贴已发送但前后均无可写焦点，触发浮球回显 before=${probeBefore.reason} after=${probeAfter.reason}`,
+            `[ASR#${reqId}] 目标未就绪，直接触发浮球回显 ` +
+            `restore=${restoreResult.reason}/${restoreResult.success ? 'ok' : 'fail'} ` +
+            `precheck=${targetAssessment.reason}/${targetAssessment.status}`,
           )
           emitFloatPasteFallback({
             requestId: reqId,
             text: outputText,
             targetAppId: pasteTarget,
-            reason: probeAfter.reason,
-            precheckReason: probeBefore.reason,
+            reason: pastePlan.fallbackReason!,
+            precheckReason: targetAssessment.reason,
           })
-        } else if (!probeBefore.ok || !probeAfter.ok) {
-          logger.warn(
-            `[ASR#${reqId}] 探测存在歧义，先不弹回显 before=${probeBefore.reason} after=${probeAfter.reason}`,
-          )
+        } else {
+          try {
+            await typeText(outputText)
+            logger.info(`[ASR#${reqId}] 粘贴动作已发送（未抛错）`)
+            const probeAfter = await assessPasteTarget({ maxAttempts: 1, retryDelayMs: 0 })
+            if (probeAfter.status !== 'ready') {
+              logger.warn(
+                `[ASR#${reqId}] 粘贴后目标状态未确认，保留诊断日志，不再自动触发回显 ` +
+                `after=${probeAfter.reason}/${probeAfter.status}`,
+              )
+            }
+          } catch (e) {
+            logger.warn(`[ASR#${reqId}] 直接粘贴失败，转浮球回显: ${String(e)}`)
+            emitFloatPasteFallback({
+              requestId: reqId,
+              text: outputText,
+              targetAppId: pasteTarget,
+              reason: 'type-failed',
+              precheckReason: targetAssessment.reason,
+            })
+          }
         }
-      } catch (e) {
-        logger.warn(`[ASR#${reqId}] 直接粘贴失败，转浮球回显: ${String(e)}`)
-        emitFloatPasteFallback({
-          requestId: reqId,
-          text: outputText,
-          targetAppId: pasteTarget,
-          reason: 'type-failed',
-          precheckReason: probeBefore.reason,
-        })
       }
       try {
         insertRecognition({ text: outputText, mode: asrMode, isCommand: false })
@@ -759,14 +751,17 @@ export function setupIpc(
     }
     const fallbackTarget = focusController.getLastExternalAppId()
     const focusTarget = targetAppId || fallbackTarget
-    await focusController.restore(focusTarget, 'float-retry')
-    const probe = await refinePasteTargetProbe(probePasteTarget())
-    if (!probe.ok) {
-      return { success: false, reason: probe.reason }
+    const restoreResult = await focusController.restore(focusTarget, 'float-retry')
+    if (!restoreResult.success) {
+      return { success: false, reason: 'restore-failed' }
+    }
+    const assessment = await assessPasteTarget({ maxAttempts: 2, retryDelayMs: 25 })
+    if (assessment.status === 'blocked') {
+      return { success: false, reason: assessment.reason }
     }
     try {
       await typeText(output)
-      return { success: true, reason: 'ok' }
+      return { success: true, reason: assessment.status === 'ready' ? 'ok' : 'unknown' }
     } catch (e) {
       logger.warn(`[Float] retry paste failed: ${String(e)}`)
       return { success: false, reason: 'type-failed' }

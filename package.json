@@ -1,7 +1,7 @@
 {
   "name": "logene-voice-input",
   "private": true,
-  "version": "0.3.4",
+  "version": "0.3.5",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -31,7 +31,7 @@
   "build": {
     "appId": "com.logene.voice-input.electron",
     "productName": "朗珈语音输入法",
-    "buildVersion": "0.3.4.1",
+    "buildVersion": "0.3.5.1",
     "artifactName": "${productName} Setup ${buildVersion}.${ext}",
     "files": [
       "out/**/*",

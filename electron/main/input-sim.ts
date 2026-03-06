@@ -1,12 +1,13 @@
 import { exec, execFile } from 'child_process'
 import { promisify } from 'util'
 import { clipboard } from 'electron'
+import { classifyPasteTargetProbe, type PasteTargetAssessment } from './paste-plan'
 import * as win32Focus from './win32-focus'
 
 const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
 
-type PasteTargetProbeReason =
+export type PasteTargetProbeReason =
   | 'ok'
   | 'unknown'
   | 'no-foreground-window'
@@ -126,6 +127,12 @@ export function probePasteTarget(): PasteTargetProbe {
   return { ok: false, reason: probe.reason, source: 'win32-gui' }
 }
 
+function shouldRefinePasteTargetProbe(probe: PasteTargetProbe): boolean {
+  if (process.platform !== 'win32') return false
+  if (probe.ok) return false
+  return probe.reason === 'focused-control-without-caret' || probe.reason === 'no-focused-control'
+}
+
 // Win32 某些控件（尤其 Chromium/WebView）不会稳定暴露 caret。
 // 当 GUIThreadInfo 判定为 focused-control-without-caret 时，再用 UIA 复核一次可写性。
 const UIA_FOCUS_WRITABLE_SCRIPT = `
@@ -217,7 +224,7 @@ function parseUiAutomationProbeResult(raw: string): {
 
 export async function refinePasteTargetProbe(probe: PasteTargetProbe): Promise<PasteTargetProbe> {
   if (process.platform !== 'win32') return probe
-  if (probe.ok || probe.reason !== 'focused-control-without-caret') return probe
+  if (!shouldRefinePasteTargetProbe(probe)) return probe
 
   try {
     const encoded = toPowerShellEncodedCommand(UIA_FOCUS_WRITABLE_SCRIPT)
@@ -259,6 +266,31 @@ export async function refinePasteTargetProbe(probe: PasteTargetProbe): Promise<P
       detail: `uia-exec-error:${error instanceof Error ? error.message : String(error)}`,
       refineOutcome: 'error',
     }
+  }
+}
+
+export async function assessPasteTarget(
+  options?: { maxAttempts?: number; retryDelayMs?: number },
+): Promise<PasteTargetAssessment> {
+  const maxAttempts = Math.max(1, Math.min(3, Math.round(options?.maxAttempts ?? 2)))
+  const retryDelayMs = Math.max(0, Math.round(options?.retryDelayMs ?? 25))
+  let attempts = 0
+  let last = await refinePasteTargetProbe(probePasteTarget())
+  attempts += 1
+
+  while (attempts < maxAttempts && classifyPasteTargetProbe(last) === 'uncertain') {
+    await sleep(retryDelayMs)
+    last = await refinePasteTargetProbe(probePasteTarget())
+    attempts += 1
+  }
+
+  return {
+    status: classifyPasteTargetProbe(last),
+    reason: last.reason,
+    attempts,
+    source: last.source,
+    detail: last.detail,
+    refineOutcome: last.refineOutcome,
   }
 }
 

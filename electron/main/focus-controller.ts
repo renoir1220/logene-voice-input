@@ -1,6 +1,7 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { logger } from './logger'
+import type { FocusRestoreResult } from './paste-plan'
 import * as win32Focus from './win32-focus'
 
 const execAsync = promisify(exec)
@@ -158,11 +159,17 @@ export class FocusController {
     return chosen
   }
 
-  async restore(snapshot: string | null, reason: string): Promise<void> {
+  async restore(snapshot: string | null, reason: string): Promise<FocusRestoreResult> {
     const target = snapshot || this.lastExternalAppId
     if (!target) {
       if (this.debugTrace) logger.debug(`[Focus] restore skipped reason=${reason} target=null`)
-      return
+      return {
+        success: false,
+        targetAppId: null,
+        finalFrontmostAppId: null,
+        attempts: 0,
+        reason: 'no-target',
+      }
     }
 
     if (this.debugTrace) {
@@ -180,12 +187,28 @@ export class FocusController {
       // 必须命中目标窗口才算成功；否则会把后续粘贴落到错误窗口。
       if (current === target) {
         if (this.debugTrace) logger.debug(`[Focus] restore success attempt=${i + 1} reason=${reason} target=${target}`)
-        return
+        return {
+          success: true,
+          targetAppId: target,
+          finalFrontmostAppId: current,
+          attempts: i + 1,
+          reason: 'ok',
+        }
       }
       await sleep(70)
     }
 
-    logger.warn(`[Focus] restore exhausted reason=${reason} target=${target}`)
+    const finalFrontmostAppId = await this.getCurrentFrontmost()
+    logger.warn(
+      `[Focus] restore exhausted reason=${reason} target=${target} final=${finalFrontmostAppId ?? 'null'}`,
+    )
+    return {
+      success: false,
+      targetAppId: target,
+      finalFrontmostAppId,
+      attempts: 3,
+      reason: 'frontmost-mismatch',
+    }
   }
 
   async isSelfAppFrontmost(reason = 'unknown'): Promise<boolean> {
