@@ -99,7 +99,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     requestId: number
     text: string
     targetAppId: string | null
-    reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
+    reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed' | 'restore-failed'
     precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
   }) => void) => {
     ipcRenderer.on('float-paste-fallback', (_e, payload) => cb(payload))

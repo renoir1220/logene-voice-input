@@ -7,7 +7,13 @@ declare global {
       saveConfig: (config: AppConfig) => Promise<void>
       getFrontmostApp: () => Promise<string | null>
       captureFocusSnapshot: (reason?: string) => Promise<string | null>
-      restoreFocus: (appId: string | null) => Promise<void>
+      restoreFocus: (appId: string | null) => Promise<{
+        success: boolean
+        targetAppId: string | null
+        finalFrontmostAppId: string | null
+        attempts: number
+        reason: 'ok' | 'no-target' | 'frontmost-mismatch'
+      }>
       getVadEnabled: () => Promise<boolean>
       setVadEnabled: (enabled: boolean) => Promise<boolean>
       setVadThreshold: (threshold: number) => Promise<number>
@@ -22,7 +28,7 @@ declare global {
       syncFloatLayout: (layout: FloatLayoutMetrics) => Promise<void>
       retryFloatPaste: (text: string, targetAppId: string | null) => Promise<{
         success: boolean
-        reason: 'ok' | 'empty-text' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
+        reason: 'ok' | 'empty-text' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed' | 'restore-failed'
       }>
       setIgnoreMouseEvents: (ignore: boolean, opts?: { forward: boolean }) => Promise<void>
       getModelStatuses: () => Promise<ModelStatus[]>
@@ -64,7 +70,7 @@ declare global {
         requestId: number
         text: string
         targetAppId: string | null
-        reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
+        reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed' | 'restore-failed'
         precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
       }) => void) => void
       onFloatDebugBoundsUpdated: (cb: (enabled: boolean) => void) => void

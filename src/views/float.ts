@@ -44,7 +44,7 @@ export function initFloatCapsuleUI() {
     requestId: number
     text: string
     targetAppId: string | null
-    reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
+    reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed' | 'restore-failed'
     precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
   } | null = null
 
@@ -116,7 +116,7 @@ export function initFloatCapsuleUI() {
     requestId: number
     text: string
     targetAppId: string | null
-    reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
+    reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed' | 'restore-failed'
     precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
   }) => {
     fallbackPayload = payload
