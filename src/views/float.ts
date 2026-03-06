@@ -1,4 +1,5 @@
 import { startCapture, stopCapture } from '../audio'
+import type { FloatLayoutMetrics } from '../types'
 import {
   initFloatElements,
   uiTrace,
@@ -31,9 +32,14 @@ export function initFloatCapsuleUI() {
   const fallbackCopyBtn = document.getElementById('float-fallback-copy-btn') as HTMLButtonElement | null
   const fallbackCloseBtn = document.getElementById('float-fallback-close-btn') as HTMLButtonElement | null
   const floatView = document.getElementById('float-capsule-view') as HTMLDivElement | null
+  const floatLayoutRoot = document.getElementById('float-layout-root') as HTMLDivElement | null
+  const capsuleContainer = floatLayoutRoot?.querySelector('.capsule-container') as HTMLDivElement | null
 
   const recordBtn = document.getElementById('record-btn') as HTMLButtonElement
   const vadToggleBtn = document.getElementById('vad-toggle-btn') as HTMLButtonElement | null
+  let ignoreMouseEvents = false
+  let layoutSyncQueued = false
+  let lastLayoutKey = ''
   let fallbackPayload: {
     requestId: number
     text: string
@@ -42,9 +48,66 @@ export function initFloatCapsuleUI() {
     precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
   } | null = null
 
+  const setFloatBoundsDebug = (enabled: boolean) => {
+    document.body.classList.toggle('float-bounds-debug', enabled)
+    scheduleLayoutSync()
+  }
+
+  const setMousePassthrough = (ignore: boolean) => {
+    if (ignoreMouseEvents === ignore) return
+    ignoreMouseEvents = ignore
+    void window.electronAPI.setIgnoreMouseEvents(ignore, ignore ? { forward: true } : undefined).catch(() => { })
+  }
+
+  const isPassThroughTarget = (target: EventTarget | null) => {
+    if (!(target instanceof Element)) return true
+    if (target.closest('#record-btn, #vad-toggle-btn, .capsule-container, .float-fallback-panel')) return false
+    return true
+  }
+
+  const updateMousePassthrough = (target: EventTarget | null) => {
+    if (!floatView || !floatView.classList.contains('active') || isDragging) {
+      setMousePassthrough(false)
+      return
+    }
+    setMousePassthrough(isPassThroughTarget(target))
+  }
+
+  const collectLayoutMetrics = (): FloatLayoutMetrics | null => {
+    if (!floatLayoutRoot || !capsuleContainer) return null
+    const layoutRect = floatLayoutRoot.getBoundingClientRect()
+    const capsuleRect = capsuleContainer.getBoundingClientRect()
+    const width = Math.ceil(layoutRect.width)
+    const height = Math.ceil(layoutRect.height)
+    if (width <= 0 || height <= 0) return null
+    return {
+      width,
+      height,
+      anchorX: Math.max(0, Math.round(capsuleRect.left - layoutRect.left)),
+      anchorY: Math.max(0, Math.round(capsuleRect.top - layoutRect.top)),
+    }
+  }
+
+  const flushLayoutSync = () => {
+    layoutSyncQueued = false
+    const metrics = collectLayoutMetrics()
+    if (!metrics) return
+    const layoutKey = `${metrics.width}:${metrics.height}:${metrics.anchorX}:${metrics.anchorY}`
+    if (layoutKey === lastLayoutKey) return
+    lastLayoutKey = layoutKey
+    void window.electronAPI.syncFloatLayout(metrics).catch(() => { })
+  }
+
+  const scheduleLayoutSync = () => {
+    if (layoutSyncQueued) return
+    layoutSyncQueued = true
+    window.requestAnimationFrame(flushLayoutSync)
+  }
+
   const hideFallbackPanel = (syncOnly = false) => {
     fallbackPayload = null
     if (fallbackPanel) fallbackPanel.hidden = true
+    scheduleLayoutSync()
     if (syncOnly) return
     void window.electronAPI.setFloatExpanded(false).catch(() => { })
   }
@@ -67,6 +130,7 @@ export function initFloatCapsuleUI() {
         : '未检测到可写焦点，结果已暂存'
     }
     if (fallbackPanel) fallbackPanel.hidden = false
+    scheduleLayoutSync()
     void window.electronAPI.setFloatExpanded(true).catch(() => { })
   }
 
@@ -80,6 +144,7 @@ export function initFloatCapsuleUI() {
 
   recordBtn.addEventListener('pointerdown', async (e) => {
     if (e.button !== 0) return
+    setMousePassthrough(false)
     uiTrace('record-btn.pointerdown', { button: e.button, pointerId: e.pointerId })
     isDragging = true
     dragMoved = false
@@ -121,6 +186,7 @@ export function initFloatCapsuleUI() {
     }
     dragMoved = false
     uiTrace('record-btn.pointerup', { pointerId: e.pointerId, dragMoved: moved })
+    updateMousePassthrough(document.elementFromPoint(e.clientX, e.clientY))
   })
 
   // 悬浮球事件（单击录音，双击/右键呼出面板）
@@ -149,6 +215,15 @@ export function initFloatCapsuleUI() {
     event.stopPropagation()
     void window.electronAPI.showFloatContextMenu()
   }, true)
+  window.addEventListener('mousemove', (event) => {
+    updateMousePassthrough(event.target)
+  })
+  window.addEventListener('blur', () => {
+    setMousePassthrough(false)
+  })
+  document.addEventListener('mouseleave', () => {
+    setMousePassthrough(false)
+  })
 
   // VAD 按钮
   vadToggleBtn?.addEventListener('click', (e) => {
@@ -213,7 +288,13 @@ export function initFloatCapsuleUI() {
   window.electronAPI.onFloatPasteFallback((payload) => {
     showFallbackPanel(payload)
   })
+  window.electronAPI.onFloatDebugBoundsUpdated((enabled) => {
+    setFloatBoundsDebug(enabled)
+  })
   void refreshAsrRuntimeStatus()
+  void window.electronAPI.getConfig()
+    .then((cfg) => setFloatBoundsDebug(Boolean(cfg.logging?.showFloatBounds)))
+    .catch(() => { })
 
   fallbackCopyBtn?.addEventListener('click', async (e) => {
     e.preventDefault()
@@ -234,5 +315,12 @@ export function initFloatCapsuleUI() {
     hideFallbackPanel()
   })
 
+  if (floatLayoutRoot) {
+    const resizeObserver = new ResizeObserver(() => {
+      scheduleLayoutSync()
+    })
+    resizeObserver.observe(floatLayoutRoot)
+  }
+  scheduleLayoutSync()
   initVad()
 }

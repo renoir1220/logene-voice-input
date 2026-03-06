@@ -153,6 +153,7 @@ function createWindow() {
   win.webContents.on('did-finish-load', () => {
     logger.info('[Window] did-finish-load')
     emitAsrRuntimeStatus()
+    win.webContents.send('float-debug-bounds-updated', Boolean(getConfig().logging?.showFloatBounds))
   })
   win.on('closed', () => {
     clearInterval(topmostWatchdog)

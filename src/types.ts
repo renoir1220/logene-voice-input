@@ -19,6 +19,7 @@ declare global {
       getWindowPosition: () => Promise<[number, number]>
       setWindowPosition: (x: number, y: number) => Promise<void>
       setFloatExpanded: (expanded: boolean) => Promise<void>
+      syncFloatLayout: (layout: FloatLayoutMetrics) => Promise<void>
       retryFloatPaste: (text: string, targetAppId: string | null) => Promise<{
         success: boolean
         reason: 'ok' | 'empty-text' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
@@ -66,6 +67,7 @@ declare global {
         reason: 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret' | 'type-failed'
         precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
       }) => void) => void
+      onFloatDebugBoundsUpdated: (cb: (enabled: boolean) => void) => void
 
       // 重写专用通道
       closeRewrite: () => Promise<void>
@@ -142,6 +144,13 @@ export interface AsrRuntimeStatus {
   updatedAt: string
 }
 
+export interface FloatLayoutMetrics {
+  width: number
+  height: number
+  anchorX: number
+  anchorY: number
+}
+
 export interface LlmModelConfig {
   id: string
   name: string
@@ -206,7 +215,7 @@ export interface AppConfig {
   asr: { mode: 'api' | 'local'; localModel: string; puncEnabled: boolean }
   onboarding?: OnboardingConfig
   llm: LlmConfig
-  logging: { enableDebug: boolean }
+  logging: { enableDebug: boolean; showFloatBounds: boolean }
 }
 
 export type RecordState = 'idle' | 'initializing' | 'recording' | 'recognizing' | 'success'

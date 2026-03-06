@@ -3,6 +3,17 @@
   align-items: stretch;
   justify-content: stretch;
   position: relative;
+  overflow: hidden;
+}
+
+.float-layout-root {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  width: max-content;
+  pointer-events: none;
+  position: relative;
 }
 
 .capsule-container {
@@ -21,9 +32,7 @@
   padding: 3px 7px;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: auto;
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
+  position: relative;
   z-index: 3;
 }
 
@@ -326,9 +335,7 @@
 /* ── 错误提示条 ── */
 .error-bar {
   display: none;
-  position: absolute;
-  right: 8px;
-  bottom: 50px;
+  position: relative;
   background: rgba(239, 68, 68, 0.92);
   color: #fff;
   font-size: 11px;
@@ -364,9 +371,7 @@
 }
 
 .float-fallback-panel {
-  position: absolute;
-  right: 8px;
-  bottom: 56px;
+  position: relative;
   width: 260px;
   padding: 10px 10px 8px;
   border-radius: 12px;
@@ -416,4 +421,13 @@
   color: #334155;
   font-size: 11px;
   cursor: pointer;
+}
+
+body.float-bounds-debug #float-capsule-view {
+  background: rgba(248, 113, 113, 0.18) !important;
+}
+
+body.float-bounds-debug .float-layout-root {
+  outline: 1px dashed rgba(185, 28, 28, 0.75);
+  outline-offset: -1px;
 }

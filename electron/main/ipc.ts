@@ -42,6 +42,13 @@ interface FloatPasteFallbackPayload {
   precheckReason: 'ok' | 'unknown' | 'no-foreground-window' | 'no-focused-control' | 'focused-control-without-caret'
 }
 
+interface FloatLayoutMetrics {
+  width: number
+  height: number
+  anchorX: number
+  anchorY: number
+}
+
 let asrRuntimeStatus: AsrRuntimeStatus = {
   phase: 'idle',
   modelId: null,
@@ -55,8 +62,6 @@ let localAsrInitModelId: string | null = null
 
 const VAD_THRESHOLD_MIN = 0.01
 const VAD_THRESHOLD_MAX = 0.2
-const FLOAT_EXPANDED_WIDTH = 320
-const FLOAT_EXPANDED_HEIGHT = 240
 
 function clampVadThreshold(raw: unknown): number {
   const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : VAD_THRESHOLD_MIN
@@ -164,6 +169,12 @@ export function setupIpc(
 ) {
   const config = getConfig()
   let floatExpanded = false
+  let floatLayout: FloatLayoutMetrics = {
+    width: FLOAT_WIDTH,
+    height: FLOAT_HEIGHT,
+    anchorX: 0,
+    anchorY: 0,
+  }
   // vadEnabled is set externally via app-context
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -206,59 +217,65 @@ export function setupIpc(
     })
   }
 
-  function setFloatWindowExpanded(expanded: boolean, reason = 'unknown') {
+  function normalizeFloatLayout(layout: FloatLayoutMetrics): FloatLayoutMetrics {
+    const width = Math.max(FLOAT_WIDTH, Math.round(layout.width || 0))
+    const height = Math.max(FLOAT_HEIGHT, Math.round(layout.height || 0))
+    const anchorX = Math.max(0, Math.min(width - 1, Math.round(layout.anchorX || 0)))
+    const anchorY = Math.max(0, Math.min(height - 1, Math.round(layout.anchorY || 0)))
+    return { width, height, anchorX, anchorY }
+  }
+
+  function applyFloatLayout(layout: FloatLayoutMetrics, reason = 'unknown') {
     const win = mainWindow
     if (!win || win.isDestroyed()) {
-      logger.warn(`[Float] expand skipped reason=${reason} win-unavailable`)
-      return
-    }
-    if (floatExpanded === expanded) {
+      logger.warn(`[Float] layout skipped reason=${reason} win-unavailable`)
       return
     }
 
+    const nextLayout = normalizeFloatLayout(layout)
     const oldBounds = win.getBounds()
-    const targetWidth = expanded ? FLOAT_EXPANDED_WIDTH : FLOAT_WIDTH
-    const targetHeight = expanded ? FLOAT_EXPANDED_HEIGHT : FLOAT_HEIGHT
-
-    let nextX = oldBounds.x
-    let nextY = oldBounds.y
-    if (expanded) {
-      nextX -= Math.max(0, targetWidth - oldBounds.width)
-      nextY -= Math.max(0, targetHeight - oldBounds.height)
-    } else {
-      nextX += Math.max(0, oldBounds.width - targetWidth)
-      nextY += Math.max(0, oldBounds.height - targetHeight)
-    }
+    const anchorScreenX = oldBounds.x + floatLayout.anchorX
+    const anchorScreenY = oldBounds.y + floatLayout.anchorY
+    let nextX = anchorScreenX - nextLayout.anchorX
+    let nextY = anchorScreenY - nextLayout.anchorY
 
     const display = screen.getDisplayMatching(oldBounds)
     const area = display.workArea
-    nextX = Math.max(area.x, Math.min(nextX, area.x + area.width - targetWidth))
-    nextY = Math.max(area.y, Math.min(nextY, area.y + area.height - targetHeight))
+    nextX = Math.max(area.x, Math.min(nextX, area.x + area.width - nextLayout.width))
+    nextY = Math.max(area.y, Math.min(nextY, area.y + area.height - nextLayout.height))
 
-    win.setBounds({
+    const roundedBounds = {
       x: Math.round(nextX),
       y: Math.round(nextY),
-      width: targetWidth,
-      height: targetHeight,
-    }, false)
+      width: nextLayout.width,
+      height: nextLayout.height,
+    }
+    const changed = roundedBounds.x !== oldBounds.x
+      || roundedBounds.y !== oldBounds.y
+      || roundedBounds.width !== oldBounds.width
+      || roundedBounds.height !== oldBounds.height
+    if (changed) {
+      win.setBounds(roundedBounds, false)
+    }
     const newBounds = win.getBounds()
 
-    if (expanded) {
-      if (process.platform === 'win32') {
-        win.setAlwaysOnTop(true, 'screen-saver', 1)
-        win.moveTop()
-      } else {
-        win.setAlwaysOnTop(true, 'floating', 1)
-      }
+    if (process.platform === 'win32') {
+      win.setAlwaysOnTop(true, 'screen-saver', 1)
+      win.moveTop()
     } else {
-      setFloatPos({ x: Math.round(nextX), y: Math.round(nextY) })
+      win.setAlwaysOnTop(true, 'floating', 1)
     }
-    floatExpanded = expanded
+    floatLayout = nextLayout
+    setFloatPos({
+      x: newBounds.x + nextLayout.anchorX,
+      y: newBounds.y + nextLayout.anchorY,
+    })
     const scaleFactor = display.scaleFactor
     logger.info(
-      `[Float] expand reason=${reason} expanded=${expanded} ` +
+      `[Float] layout reason=${reason} expanded=${floatExpanded} ` +
       `old=(${oldBounds.x},${oldBounds.y},${oldBounds.width},${oldBounds.height}) ` +
       `new=(${newBounds.x},${newBounds.y},${newBounds.width},${newBounds.height}) ` +
+      `anchor=(${nextLayout.anchorX},${nextLayout.anchorY}) ` +
       `workArea=(${area.x},${area.y},${area.width},${area.height}) scale=${scaleFactor}`,
     )
   }
@@ -268,7 +285,7 @@ export function setupIpc(
       `[FloatFallback] emit req=${payload.requestId} reason=${payload.reason} ` +
       `precheck=${payload.precheckReason} target=${payload.targetAppId ?? 'null'} textLen=${payload.text.length}`,
     )
-    setFloatWindowExpanded(true, `fallback#${payload.requestId}`)
+    floatExpanded = true
     mainWindow?.webContents.send('float-paste-fallback', payload)
   }
 
@@ -343,6 +360,7 @@ export function setupIpc(
     const syncedVadThreshold = clampVadThreshold(merged.vad?.speechThreshold)
     mainWindow?.webContents.send('vad-threshold-updated', syncedVadThreshold)
     dashboardWindow?.webContents.send('vad-threshold-updated', syncedVadThreshold)
+    mainWindow?.webContents.send('float-debug-bounds-updated', Boolean(merged.logging?.showFloatBounds))
     updateTrayMenu()
     if ((merged.asr?.mode ?? 'api') === 'local') {
       void ensureLocalRecognizerReady('config-save').catch(() => { })
@@ -715,16 +733,22 @@ export function setupIpc(
   handle('get-window-position', () => mainWindow?.getPosition() || [0, 0])
   handle('set-window-position', (_event, x: number, y: number) => {
     if (mainWindow) {
-      mainWindow.setPosition(Math.round(x), Math.round(y), false)
-      const [w, h] = mainWindow.getSize()
-      if (w === FLOAT_WIDTH && h === FLOAT_HEIGHT) {
-        setFloatPos({ x: Math.round(x), y: Math.round(y) })
-      }
+      const nextX = Math.round(x)
+      const nextY = Math.round(y)
+      mainWindow.setPosition(nextX, nextY, false)
+      setFloatPos({
+        x: nextX + floatLayout.anchorX,
+        y: nextY + floatLayout.anchorY,
+      })
     }
   })
 
   handle('set-float-expanded', (_event, expanded: boolean) => {
-    setFloatWindowExpanded(Boolean(expanded), 'renderer-request')
+    floatExpanded = Boolean(expanded)
+  })
+
+  handle('sync-float-layout', (_event, layout: FloatLayoutMetrics) => {
+    applyFloatLayout(layout, 'renderer-layout')
   })
 
   handle('retry-float-paste', async (_event, text: string, targetAppId: string | null) => {

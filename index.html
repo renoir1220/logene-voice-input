@@ -13,34 +13,36 @@
   <div id="app">
     <!-- 视图 1：Typeless 式横向胶囊悬浮窗 -->
     <div id="float-capsule-view" class="view active">
-      <div class="capsule-container">
-        <button id="record-btn" class="capsule-btn" title="点击录音 / Alt+E 按住 / 双击或右键打开配置">
-          <span class="init-spinner" aria-hidden="true"></span>
-          <div class="idle-dots">
-            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      <div id="float-layout-root" class="float-layout-root">
+        <div id="error-bar" class="error-bar"></div>
+        <div id="float-fallback-panel" class="float-fallback-panel" hidden>
+          <div id="float-fallback-hint" class="float-fallback-hint">未检测到可写焦点，已暂存识别结果</div>
+          <div id="float-fallback-text" class="float-fallback-text" title=""></div>
+          <div class="float-fallback-actions">
+            <button id="float-fallback-copy-btn" class="float-fallback-btn" type="button">复制</button>
+            <button id="float-fallback-close-btn" class="float-fallback-btn" type="button">收起</button>
           </div>
-          <div class="wave-bars">
-            <span class="bar"></span><span class="bar"></span><span class="bar"></span>
-          </div>
-        </button>
-        <button id="vad-toggle-btn" class="vad-toggle-btn" title="VAD 监听开关 (Alt+Shift+V)" aria-pressed="false">
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
-            <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z" />
-            <path
-              d="M17 11a1 1 0 1 1 2 0 7 7 0 0 1-6 6.93V21h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.07A7 7 0 0 1 5 11a1 1 0 1 1 2 0 5 5 0 1 0 10 0z" />
-          </svg>
-        </button>
-        <span id="status-text" class="status-text">就绪</span>
-      </div>
-      <div id="float-fallback-panel" class="float-fallback-panel" hidden>
-        <div id="float-fallback-hint" class="float-fallback-hint">未检测到可写焦点，已暂存识别结果</div>
-        <div id="float-fallback-text" class="float-fallback-text" title=""></div>
-        <div class="float-fallback-actions">
-          <button id="float-fallback-copy-btn" class="float-fallback-btn" type="button">复制</button>
-          <button id="float-fallback-close-btn" class="float-fallback-btn" type="button">收起</button>
+        </div>
+        <div class="capsule-container">
+          <button id="record-btn" class="capsule-btn" title="点击录音 / Alt+E 按住 / 双击或右键打开配置">
+            <span class="init-spinner" aria-hidden="true"></span>
+            <div class="idle-dots">
+              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            </div>
+            <div class="wave-bars">
+              <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+            </div>
+          </button>
+          <button id="vad-toggle-btn" class="vad-toggle-btn" title="VAD 监听开关 (Alt+Shift+V)" aria-pressed="false">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
+              <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z" />
+              <path
+                d="M17 11a1 1 0 1 1 2 0 7 7 0 0 1-6 6.93V21h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-3.07A7 7 0 0 1 5 11a1 1 0 1 1 2 0 5 5 0 1 0 10 0z" />
+            </svg>
+          </button>
+          <span id="status-text" class="status-text">就绪</span>
         </div>
       </div>
-      <div id="error-bar" class="error-bar"></div>
     </div>
 
     <!-- 视图 2：主界面控制台 -->
@@ -166,6 +168,12 @@
                   <label class="checkbox">
                     <input id="cfg-log-debug-enabled" type="checkbox" />
                     <span>记录 Debug 日志（默认关闭，开启后会记录更详细诊断日志）</span>
+                  </label>
+                </div>
+                <div class="form-group row-group">
+                  <label class="checkbox">
+                    <input id="cfg-float-bounds-debug" type="checkbox" />
+                    <span>显示浮球命中区域（Debug，开启后会给浮球窗口背景着色）</span>
                   </label>
                 </div>
                 <div class="form-group row-group" style="display:none">
